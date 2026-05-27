@@ -1,6 +1,6 @@
 # macro
 
-how to use 
+how to build exe 
 in the cmd :
 1-pip install pyinstaller
 2-pip install customtkinter
