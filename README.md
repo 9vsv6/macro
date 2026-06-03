@@ -2,7 +2,8 @@
 
 A powerful, high-performance desktop automation platform built with Python and CustomTkinter. Unlike standard macro recorders that rely blindly on static timers, **Vision Macro Suite Pro** utilizes low-level Windows APIs and advanced computer vision algorithms to create intelligent, context-aware, and humanized automation workflows.
 
-![Application Dashboard](assets/global_trigger_example.png) *(Optional: Replace with your actual screenshot path)*
+<img width="1276" height="905" alt="image" src="https://github.com/user-attachments/assets/0528ec0c-2783-46d7-a87e-90500a07c215" />
+
 
 ## ✨ Key Features
 
