@@ -39,5 +39,6 @@ This application requires **Python 3.8+** and a **64-bit Windows Environment** d
    cd macro
 2. pip install pyinstaller
 3. pip install customtkinter
-4. pip install opencv-python pyautogui
-5. pyinstaller macro_app.spec
+4. pip install pillow
+5. pip install opencv-python pyautogui
+6. pyinstaller macro_app.spec
