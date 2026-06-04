@@ -13,6 +13,7 @@ import queue
 import cv2
 import pyautogui
 import numpy as np
+from PIL import Image, ImageTk  
 
 # Enhanced Modern Color Palette
 APP_BG = "#0c0c0e"          
@@ -31,7 +32,7 @@ ctk.set_appearance_mode("Dark")
 # ── Windows API Specifications & Native Binding Engines ────────────────────────
 GetForegroundWindow = ctypes.windll.user32.GetForegroundWindow
 GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
-OpenProcess = ctypes.windll.kernel32.OpenProcess
+OpenProcess = ctypes.windll.openProcess if hasattr(ctypes.windll.kernel32, 'openProcess') else ctypes.windll.kernel32.OpenProcess
 CloseHandle = ctypes.windll.kernel32.CloseHandle
 QueryFullProcessImageNameW = ctypes.windll.kernel32.QueryFullProcessImageNameW
 EnumWindows = ctypes.windll.user32.EnumWindows
@@ -228,6 +229,14 @@ class MacroApp(ctk.CTk):
         self.status_label = ctk.CTkLabel(id_card, text="● STABLE SYSTEM IDLE", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MUTED)
         self.status_label.pack(pady=(0, 12))
 
+        # TARGET ANCHOR STATUS DECK CARD
+        self.anchor_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
+        self.anchor_card.pack(fill="x", pady=6)
+        self.anchor_status_lbl = ctk.CTkLabel(self.anchor_card, text="Anchor Window: Independent", font=ctk.CTkFont(size=11, family="Consolas"), text_color=ACCENT_BLUE, anchor="w")
+        self.anchor_status_lbl.pack(side="left", padx=14, pady=10)
+        self.reset_anchor_btn = ctk.CTkButton(self.anchor_card, text="✕ Reset", width=60, height=20, fg_color="#2b2d31", hover_color=ACCENT_RED, text_color=TEXT_MUTED, font=ctk.CTkFont(size=10, weight="bold"), command=self.reset_anchor_window)
+        self.reset_anchor_btn.pack(side="right", padx=14, pady=10)
+
         # CENTER PANEL: GLOBAL IMAGE TRIGGER CONTROL
         img_trigger_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
         img_trigger_card.pack(fill="x", pady=6)
@@ -238,29 +247,29 @@ class MacroApp(ctk.CTk):
         self.trigger_status_title = ctk.CTkLabel(self.trigger_header_container, text="📸 GLOBAL SEQUENCE IMAGE TRIGGER", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN)
         self.trigger_status_title.pack(side="left", pady=4)
         
+        self.img_trigger_switch_var = ctk.StringVar(value="off")
+        self.img_trigger_switch = ctk.CTkSwitch(self.trigger_header_container, text="", variable=self.img_trigger_switch_var, onvalue="on", offvalue="off", width=40, command=self.toggle_image_trigger_view)
+        self.img_trigger_switch.pack(side="right", padx=2)
+
         self.clear_img_trigger_btn = ctk.CTkButton(self.trigger_header_container, text="❌ Clear", width=55, height=18, fg_color="#2b2d31", hover_color=ACCENT_RED, text_color=TEXT_MUTED, font=ctk.CTkFont(size=10, weight="bold"), command=self.remove_global_trigger_image)
         
-        btn_container = ctk.CTkFrame(img_trigger_card, fg_color="transparent")
-        btn_container.pack(fill="x", padx=10, pady=(2, 10))
+        self.btn_container = ctk.CTkFrame(img_trigger_card, fg_color="transparent")
         
-        self.select_trigger_img_btn = ctk.CTkButton(btn_container, text="📂 Select Image File", fg_color="#2b2d31", hover_color="#3d4047", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.set_global_center_trigger_image)
+        self.select_trigger_img_btn = ctk.CTkButton(self.btn_container, text="📂 Select Image File", fg_color="#2b2d31", hover_color="#3d4047", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.set_global_center_trigger_image)
         self.select_trigger_img_btn.pack(side="left", expand=True, fill="x", padx=(4, 2))
         
-        self.snipe_trigger_img_btn = ctk.CTkButton(btn_container, text="🎯 Snipe Vision Node", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_global_center_screen_sniper)
+        self.snipe_trigger_img_btn = ctk.CTkButton(self.btn_container, text="🎯 Snipe Vision Node", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_global_center_screen_sniper)
         self.snipe_trigger_img_btn.pack(side="right", expand=True, fill="x", padx=(2, 4))
 
-        # Actions Panel
+        self.center_preview_label = ctk.CTkLabel(img_trigger_card, text="", height=1)
+
+        # ── REORDERED RUN CONTROL ARRAYS SHIFTED HIGHER UP (image_23fe18.png Layout Match) ──
         act_card = ctk.CTkFrame(self.middle_frame, fg_color="transparent")
         act_card.pack(fill="x", pady=6)
         self.play_btn = ctk.CTkButton(act_card, text=f"▶ Run Sequence ({self.selected_play_hotkey})", fg_color=ACCENT_GREEN, hover_color="#15803d", font=ctk.CTkFont(size=13, weight="bold"), height=40, command=self.toggle_playback)
         self.play_btn.pack(fill="x", pady=3)
         self.record_btn = ctk.CTkButton(act_card, text=f"🔴 Capture Sequence ({self.selected_record_hotkey})", fg_color=ACCENT_RED, hover_color="#b91c1c", font=ctk.CTkFont(size=13, weight="bold"), height=40, command=self.toggle_recording)
         self.record_btn.pack(fill="x", pady=3)
-
-        self.anchor_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
-        self.anchor_card.pack(fill="x", pady=6)
-        self.anchor_status_lbl = ctk.CTkLabel(self.anchor_card, text="Anchor Window: Independent", font=ctk.CTkFont(size=11, family="Consolas"), text_color=ACCENT_BLUE, anchor="w")
-        self.anchor_status_lbl.pack(fill="x", padx=14, pady=10)
 
         hk_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
         hk_card.pack(fill="x", pady=6)
@@ -279,6 +288,10 @@ class MacroApp(ctk.CTk):
         self.play_hk_btn = ctk.CTkButton(hk_body, text=self.selected_play_hotkey, width=120, height=26, fg_color="#222226", hover_color="#2d2d34", command=lambda: self.start_listening_for_hotkey('play'))
         self.play_hk_btn.grid(row=1, column=1, padx=2, pady=5, sticky="e")
 
+        # PARAMS DECK (LOWER SPACE CONFIGS)
+        self.dynamic_loop_inputs = ctk.CTkFrame(self.middle_frame, fg_color="transparent")
+        self.dynamic_loop_inputs.pack(fill="x", pady=2)
+
         drv_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
         drv_card.pack(fill="x", pady=6)
         ctk.CTkLabel(drv_card, text="⏱️ INTERACTION CONFIGURATIONS", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=12, pady=6)
@@ -287,8 +300,6 @@ class MacroApp(ctk.CTk):
         ctk.CTkRadioButton(db, text="One Time Execution", variable=self.loop_var, value="One Time", font=ctk.CTkFont(size=12), command=self.change_loop_mode).pack(anchor="w", pady=2)
         ctk.CTkRadioButton(db, text="Infinite Processing Loops", variable=self.loop_var, value="Loop", font=ctk.CTkFont(size=12), command=self.change_loop_mode).pack(anchor="w", pady=2)
         ctk.CTkRadioButton(db, text="Custom Loop Count Iterations", variable=self.loop_var, value="Count", font=ctk.CTkFont(size=12), command=self.change_loop_mode).pack(anchor="w", pady=2)
-        self.dynamic_loop_inputs = ctk.CTkFrame(self.middle_frame, fg_color="transparent")
-        self.dynamic_loop_inputs.pack(fill="x", pady=2)
 
         hb = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
         hb.pack(fill="x", pady=6)
@@ -318,8 +329,43 @@ class MacroApp(ctk.CTk):
         et = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         et.pack(fill="x", pady=14, padx=16)
         
+        self.add_image_node_btn = ctk.CTkButton(et, text="📸 Snip Image Search", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_screen_sniper_flow)
+        self.add_image_node_btn.pack(side="left", padx=2)
+
         self.add_manual_btn = ctk.CTkButton(et, text="➕ Add Keyboard Key", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.toggle_inline_action_listener)
         self.add_manual_btn.pack(side="right", padx=2)
+
+    def reset_anchor_window(self):
+        self.recorded_target_hwnd = None
+        self.recorded_target_exe = "Unknown Window"
+        self.anchor_status_lbl.configure(text="Anchor Window: Independent")
+
+    def toggle_image_trigger_view(self):
+        if self.img_trigger_switch_var.get() == "on":
+            self.btn_container.pack(fill="x", padx=10, pady=(2, 10))
+            if self.global_trigger_image_path and os.path.exists(self.global_trigger_image_path):
+                self.center_preview_label.pack(fill="x", padx=14, pady=(2, 10))
+                self.clear_img_trigger_btn.pack(side="right", padx=6, pady=2)
+        else:
+            self.btn_container.pack_forget()
+            self.center_preview_label.pack_forget()
+            self.clear_img_trigger_btn.pack_forget()
+
+    def render_center_panel_preview(self, path):
+        try:
+            if path and os.path.exists(path):
+                img = Image.open(path)
+                img.thumbnail((260, 90)) 
+                ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(img.width, img.height))
+                self.center_preview_label.configure(image=ctk_img, height=img.height)
+                self.center_preview_label.image = ctk_img
+                if self.img_trigger_switch_var.get() == "on":
+                    self.center_preview_label.pack(fill="x", padx=14, pady=(2, 10))
+            else:
+                self.center_preview_label.configure(image=None, height=1)
+                self.center_preview_label.pack_forget()
+        except Exception:
+            pass
 
     def set_global_center_trigger_image(self):
         fp = filedialog.askopenfilename(title="Select Trigger Image Snippet", filetypes=[("Images", "*.png *.jpg *.jpeg")])
@@ -328,6 +374,7 @@ class MacroApp(ctk.CTk):
             fn = os.path.basename(fp)
             self.trigger_status_title.configure(text=f"📷 TRIGGER IMAGE BOUND: {fn.upper()}", text_color=ACCENT_GREEN)
             self.clear_img_trigger_btn.pack(side="right", padx=6, pady=2)
+            self.render_center_panel_preview(fp)
 
     def trigger_global_center_screen_sniper(self):
         if self.is_playing or self.is_recording: return
@@ -339,17 +386,19 @@ class MacroApp(ctk.CTk):
         self.deiconify()
         captured_matrix = pyautogui.screenshot(region=(x, y, w, h))
         os.makedirs("./assets", exist_ok=True)
-        assigned_path = f"./assets/global_trigger_{int(time.time())}.png"
+        assigned_path = f"./assets/global_trigger_active.png"
         captured_matrix.save(assigned_path)
         
         self.global_trigger_image_path = assigned_path
         self.trigger_status_title.configure(text="📷 TRIGGER SNIP BOUND SUCCESSFUL", text_color=ACCENT_GREEN)
         self.clear_img_trigger_btn.pack(side="right", padx=6, pady=2)
+        self.render_center_panel_preview(assigned_path)
 
     def remove_global_trigger_image(self):
         self.global_trigger_image_path = None
         self.trigger_status_title.configure(text="📸 GLOBAL SEQUENCE IMAGE TRIGGER", text_color=TEXT_MAIN)
         self.clear_img_trigger_btn.pack_forget()
+        self.render_center_panel_preview(None)
 
     def clear_macro(self):
         if self.is_playing or self.is_recording: return
@@ -357,7 +406,6 @@ class MacroApp(ctk.CTk):
         self.selected_action_index = None
         self.refresh_timeline_ui()
 
-    # ── Profile Catalog Sync ──────────────────────────────────────────────────
     def create_new_profile_entry(self):
         name = f"Profile Vector {len(self.profiles_db)+1}"
         self.profiles_db[name] = []
@@ -412,23 +460,49 @@ class MacroApp(ctk.CTk):
         delta_y = event.y_root - self.drag_y_start
         
         if delta_y > 34 and self.dragged_index < len(self.macro_actions) - 1:
-            i = self.dragged_index
-            self.macro_actions[i], self.macro_actions[i+1] = self.macro_actions[i+1], self.macro_actions[i]
-            self.dragged_index = i + 1
+            idx = self.dragged_index
+            self.macro_actions[idx], self.macro_actions[idx+1] = self.macro_actions[idx+1], self.macro_actions[idx]
+            
+            row1 = self.action_ui_rows[idx]
+            row2 = self.action_ui_rows[idx+1]
+            self.action_ui_rows[idx], self.action_ui_rows[idx+1] = row2, row1
+            
+            row1.pack_forget()
+            row1.pack(after=row2, fill="x", pady=3, padx=5)
+            
+            self.dragged_index = idx + 1
             self.drag_y_start = event.y_root
-            self.refresh_timeline_ui()
-            self.select_timeline_item(i + 1)
+            self.update_row_indices_display_text_only()
+            self.select_timeline_item(idx + 1)
+            
         elif delta_y < -34 and self.dragged_index > 0:
-            i = self.dragged_index
-            self.macro_actions[i], self.macro_actions[i-1] = self.macro_actions[i-1], self.macro_actions[i]
-            self.dragged_index = i - 1
+            idx = self.dragged_index
+            self.macro_actions[idx], self.macro_actions[idx-1] = self.macro_actions[idx-1], self.macro_actions[idx]
+            
+            row1 = self.action_ui_rows[idx]
+            row2 = self.action_ui_rows[idx-1]
+            self.action_ui_rows[idx], self.action_ui_rows[idx-1] = row2, row1
+            
+            row1.pack_forget()
+            row1.pack(before=row2, fill="x", pady=3, padx=5)
+            
+            self.dragged_index = idx - 1
             self.drag_y_start = event.y_root
-            self.refresh_timeline_ui()
-            self.select_timeline_item(i - 1)
+            self.update_row_indices_display_text_only()
+            self.select_timeline_item(idx - 1)
 
     def on_row_drag_release(self, event, index):
         self.dragged_index = None
         self.profiles_db[self.active_profile_name] = list(self.macro_actions)
+        self.reindex_timeline_rows()
+
+    def update_row_indices_display_text_only(self):
+        for i, row in enumerate(self.action_ui_rows):
+            action = self.macro_actions[i]
+            for child in row.winfo_children():
+                if isinstance(child, ctk.CTkButton) and child.cget("text").startswith(" ["):
+                    child.configure(text=self._action_text(i, action))
+                    break
 
     def play_macro(self):
         mouse_ctl = mouse.Controller()
@@ -447,7 +521,7 @@ class MacroApp(ctk.CTk):
         while self.is_playing and (max_loops == float('inf') or loop_count < max_loops):
             self.hud_window.update_stats(loop_count)
 
-            if self.global_trigger_image_path and os.path.exists(self.global_trigger_image_path):
+            if self.img_trigger_switch_var.get() == "on" and self.global_trigger_image_path and os.path.exists(self.global_trigger_image_path):
                 global_matched = False
                 template = cv2.imread(self.global_trigger_image_path, cv2.IMREAD_UNCHANGED)
                 while self.is_playing and not global_matched:
@@ -537,6 +611,18 @@ class MacroApp(ctk.CTk):
         if hasattr(self, 'manual_mouse_listener'): self.manual_mouse_listener.stop()
         if hasattr(self, 'manual_keyboard_listener'): self.manual_keyboard_listener.stop()
 
+    def _on_inline_key_press(self, key):
+        vk, name = self._extract_key_info(key)
+        if vk:
+            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':False,'delay':1.0}))
+            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':True,'delay':0.05}))
+        self.after(0, self.stop_inline_listener)
+
+    def _on_inline_mouse_click(self, x, y, button, pressed):
+        if pressed:
+            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'mouse','details':(x,y,button),'delay':1.0}))
+            self.after(0, self.stop_inline_listener)
+
     def update_row_texts_only(self):
         for idx, action in enumerate(self.macro_actions):
             if idx >= len(self.action_ui_rows): break
@@ -560,6 +646,17 @@ class MacroApp(ctk.CTk):
         row.pack(fill="x", pady=3, padx=5)
         row.pack_propagate(False)
         
+        if action['type'] == 'image_match_wait' and 'image_path' in action and os.path.exists(action['image_path']):
+            try:
+                img = Image.open(action['image_path'])
+                img.thumbnail((24, 24))
+                ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(img.width, img.height))
+                img_lbl = ctk.CTkLabel(row, image=ctk_img, text="")
+                img_lbl.pack(side="left", padx=(8, 2))
+                img_lbl.image = ctk_img
+            except Exception:
+                pass
+
         lbl = ctk.CTkButton(row, text=self._action_text(idx, action), anchor="w", fg_color="transparent", font=ctk.CTkFont(family="Consolas", size=11), corner_radius=0, command=lambda i=idx: self.select_timeline_item(i))
         lbl.pack(side="left", fill="both", expand=True)
         
@@ -585,7 +682,28 @@ class MacroApp(ctk.CTk):
         if target_index < len(self.macro_actions):
             self.macro_actions.pop(target_index)
             self.profiles_db[self.active_profile_name] = list(self.macro_actions)
-            self.refresh_timeline_ui()
+            
+            row_to_destroy = self.action_ui_rows.pop(target_index)
+            row_to_destroy.destroy()
+            
+            self.reindex_timeline_rows()
+            self.selected_action_index = None
+
+    def reindex_timeline_rows(self):
+        for idx, row in enumerate(self.action_ui_rows):
+            action = self.macro_actions[idx]
+            for child in row.winfo_children():
+                if isinstance(child, ctk.CTkButton):
+                    child.configure(text=self._action_text(idx, action), command=lambda i=idx: self.select_timeline_item(i))
+                    child.bind("<ButtonPress-1>", lambda e, i=idx: self.on_row_drag_start(e, i), add="+")
+                    child.bind("<B1-Motion>", lambda e, i=idx: self.on_row_drag_motion(e, i))
+                    child.bind("<ButtonRelease-1>", lambda e, i=idx: self.on_row_drag_release(e, i))
+                elif isinstance(child, ctk.CTkFrame):
+                    for sub_child in child.winfo_children():
+                        if isinstance(sub_child, ctk.CTkEntry):
+                            sub_child.bind("<FocusOut>", lambda e, i=idx, en=sub_child: self.update_action_delay(i, en.get()))
+                        elif isinstance(sub_child, ctk.CTkButton) and sub_child.cget("text") == "✕":
+                            sub_child.configure(command=lambda i=idx: self.delete_specific_action_node(i))
 
     def refresh_timeline_ui(self):
         for r in self.action_ui_rows: r.destroy()
@@ -598,15 +716,6 @@ class MacroApp(ctk.CTk):
         old = self.selected_action_index; self.selected_action_index = index
         if old is not None and old < len(self.action_ui_rows): self.action_ui_rows[old].configure(fg_color="#141416")
         if index < len(self.action_ui_rows): self.action_ui_rows[index].configure(fg_color="#1e293b")
-
-    def toggle_exe_lock(self):
-        if self.exe_switch_var.get() == "on": self.exe_entry_frame.pack(fill="x", padx=4, pady=4); self.refresh_running_exes_list()
-        else: self.exe_entry_frame.pack_forget()
-
-    def refresh_running_exes_list(self):
-        lst = sorted(list(set([w[1] for w in get_all_visible_windows_info()])))
-        self.exe_name_entry.configure(values=lst)
-        if lst: self.exe_name_entry.set(lst[0])
 
     def change_loop_mode(self):
         for w in self.dynamic_loop_inputs.winfo_children(): w.destroy()
@@ -714,25 +823,20 @@ class MacroApp(ctk.CTk):
         }
         if key in special_translation: 
             return special_translation[key]
-
         if hasattr(key, 'char') and key.char:
             return ord(key.char.upper()), key.char.upper()
-
         if hasattr(key, 'vk') and key.vk is not None:
             return key.vk, SCAN_TO_NAME.get(VK_TO_SCAN.get(key.vk, 0), f"VK_{key.vk}")
-
         return None, "UNKNOWN"
 
     def on_press(self, key):
         if self.is_recording:
             vk, name = self._extract_key_info(key)
             if not vk: return
-            
             if self.macro_actions and self.macro_actions[-1]['type'] == 'keyboard' and self.macro_actions[-1]['name'] == name and not self.macro_actions[-1]['is_release']:
                 self.macro_actions[-1]['repeat_count'] = self.macro_actions[-1].get('repeat_count', 1) + 1
                 self.update_row_texts_only()
                 return
-
             self.currently_pressed_keys.add(name)
             d = time.time() - self.start_time; self.start_time = time.time()
             self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':False,'repeat_count':1,'delay':d}))
@@ -744,18 +848,6 @@ class MacroApp(ctk.CTk):
             self.currently_pressed_keys.discard(name)
             d = time.time() - self.start_time; self.start_time = time.time()
             self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':True,'delay':d}))
-
-    def _on_inline_key_press(self, key):
-        vk, name = self._extract_key_info(key)
-        if vk:
-            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':False,'delay':1.0}))
-            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':True,'delay':0.05}))
-        self.after(0, self.stop_inline_listener)
-
-    def _on_inline_mouse_click(self, x, y, button, pressed):
-        if pressed:
-            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'mouse','details':(x,y,button),'delay':1.0}))
-            self.after(0, self.stop_inline_listener)
 
     def toggle_playback(self):
         if self.is_recording or not self.macro_actions: return
@@ -785,7 +877,6 @@ class MacroApp(ctk.CTk):
                 json.dump(payload, f, indent=4)
             messagebox.showinfo("Export Successful", "Macro profile saved successfully!")
 
-    # ── FIXED: Added instant packing handler for loading base64 configurations ──
     def import_macro(self):
         fp = filedialog.askopenfilename(filetypes=[("JSON Profile", "*.json")])
         if fp:
@@ -794,24 +885,30 @@ class MacroApp(ctk.CTk):
                     data = json.load(f)
                 
                 self.recorded_target_exe = data.get('target', 'Unknown Window')
-                self.macro_actions = data.get('actions', [])
+                raw_actions = data.get('actions', [])
                 
                 encoded_image = data.get('embedded_trigger_image')
                 if encoded_image:
                     os.makedirs("./assets", exist_ok=True)
-                    reconstructed_path = f"./assets/global_trigger_{int(time.time())}.png"
+                    reconstructed_path = f"./assets/global_trigger_active.png"
                     
                     with open(reconstructed_path, "wb") as image_out:
                         image_out.write(base64.b64decode(encoded_image))
                         
                     self.global_trigger_image_path = reconstructed_path
-                    fn = os.path.basename(reconstructed_path)
-                    self.trigger_status_title.configure(text=f"📷 TRIGGER IMAGE BOUND: {fn.upper()}", text_color=ACCENT_GREEN)
-                    # FIXED: This line now forces the clear button layout onto the screen right away
-                    self.clear_img_trigger_btn.pack(side="right", padx=6, pady=2)
+                    self.trigger_status_title.configure(text=f"📷 TRIGGER IMAGE BOUND: TRIGGER_ACTIVE.PNG", text_color=ACCENT_GREEN)
+                    
+                    self.img_trigger_switch_var.set("on")
+                    self.toggle_image_trigger_view()
+                    self.render_center_panel_preview(reconstructed_path)
+                    
+                    for action in raw_actions:
+                        if action.get('type') == 'image_match_wait':
+                            action['image_path'] = reconstructed_path
                 else:
                     self.remove_global_trigger_image()
 
+                self.macro_actions = raw_actions
                 self.refresh_timeline_ui()
             except Exception as error:
                 messagebox.showerror("Import Error", f"Failed to open macro file: {str(error)}")
