@@ -11,28 +11,36 @@ from pynput import mouse, keyboard
 from tkinter import filedialog, messagebox, Toplevel, Canvas
 import queue
 import cv2
+import asyncio
 import pyautogui
 import numpy as np
 from PIL import Image, ImageTk  
 
-# Enhanced Modern Color Palette
-APP_BG = "#0c0c0e"          
-PANEL_BG = "#141416"        
-HEADER_BG = "#1a1a1e"       
-BORDER_COLOR = "#222226"     
-ACCENT_BLUE = "#2563eb"     
-ACCENT_GREEN = "#16a34a"    
-ACCENT_RED = "#dc2626"      
-ACCENT_PURPLE = "#7c3aed"   
-TEXT_MAIN = "#f3f4f6"       
-TEXT_MUTED = "#9ca3af"      
+# Try importing pygame for native DirectInput/XInput controller polling hooks
+try:
+    import pygame
+    HAS_PYGAME = True
+except ImportError:
+    HAS_PYGAME = False
+
+# Enhanced Premium Color Palette
+APP_BG = "#09090b"          
+PANEL_BG = "#121214"        
+HEADER_BG = "#161619"       
+BORDER_COLOR = "#1e1e24"     
+ACCENT_BLUE = "#3b82f6"     
+ACCENT_GREEN = "#10b981"    
+ACCENT_RED = "#ef4444"      
+ACCENT_PURPLE = "#8b5cf6"   
+TEXT_MAIN = "#f4f4f5"       
+TEXT_MUTED = "#a1a1aa"      
 
 ctk.set_appearance_mode("Dark")
 
 # ── Windows API Specifications & Native Binding Engines ────────────────────────
 GetForegroundWindow = ctypes.windll.user32.GetForegroundWindow
 GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
-OpenProcess = ctypes.windll.openProcess if hasattr(ctypes.windll.kernel32, 'openProcess') else ctypes.windll.kernel32.OpenProcess
+OpenProcess = ctypes.windll.kernel32.OpenProcess if hasattr(ctypes.windll.kernel32, 'OpenProcess') else ctypes.windll.kernel32.OpenProcess
 CloseHandle = ctypes.windll.kernel32.CloseHandle
 QueryFullProcessImageNameW = ctypes.windll.kernel32.QueryFullProcessImageNameW
 EnumWindows = ctypes.windll.user32.EnumWindows
@@ -121,9 +129,43 @@ def send_hardware_input(vk_code, is_release=False):
     SendInput(1, ctypes.pointer(command), ctypes.sizeof(command))
     return True
 
+class CTKTooltip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        self.widget.bind("<Enter>", self.show_tooltip)
+        self.widget.bind("<Leave>", self.hide_tooltip)
+
+    def show_tooltip(self, event=None):
+        if self.tooltip_window or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        self.tooltip_window = tw = Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.attributes("-topmost", True)
+        tw.configure(bg="#1e1e24")
+        
+        from tkinter import Label, Frame
+        inner = Frame(tw, bg="#18181b")
+        inner.pack(padx=1, pady=1)
+        
+        label = Label(inner, text=self.text, justify="left", bg="#18181b", fg="#f4f4f5",
+                      font=("Segoe UI", 9), padx=8, pady=4)
+        label.pack()
+
+    def hide_tooltip(self, event=None):
+        tw = self.tooltip_window
+        self.tooltip_window = None
+        if tw:
+            tw.destroy()
+
 class ScreenSnipper(Toplevel):
-    def __init__(self, callback):
-        super().__init__()
+    def __init__(self, parent, callback):
+        super().__init__(parent)
+        self.parent = parent
         self.callback = callback
         self.attributes("-alpha", 0.35, "-fullscreen", True, "-topmost", True)
         self.config(cursor="cross")
@@ -132,6 +174,7 @@ class ScreenSnipper(Toplevel):
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.bind("<Escape>", self.on_escape)
         self.start_x = self.start_y = self.rect = None
 
     def on_press(self, e):
@@ -143,29 +186,284 @@ class ScreenSnipper(Toplevel):
 
     def on_release(self, e):
         x1, y1, x2, y2 = min(self.start_x, e.x), min(self.start_y, e.y), max(self.start_x, e.x), max(self.start_y, e.y)
+        self.withdraw()
+        self.update()
+        time.sleep(0.15)
         self.destroy()
         if (x2 - x1) > 5 and (y2 - y1) > 5:
             self.callback(x1, y1, x2 - x1, y2 - y1)
+        else:
+            if self.parent:
+                self.parent.deiconify()
+
+    def on_escape(self, event=None):
+        self.destroy()
+        if self.parent:
+            self.parent.deiconify()
 
 class LiveHUD(Toplevel):
-    def __init__(self, stop_callback):
-        super().__init__()
+    def __init__(self, parent, state, stop_callback):
+        super().__init__(parent)
+        self.parent = parent
         self.overrideredirect(True)
-        self.attributes("-topmost", True, "-alpha", 0.9)
-        self.geometry("260x70+30+30")
-        self.configure(bg="#141416")
+        self.attributes("-topmost", True, "-alpha", 0.85)
+        self.geometry("340x110+40+40")
+        self.configure(bg="#09090b")
         
-        self.border = Canvas(self, width=260, height=70, bg="#141416", highlightthickness=1, highlightbackground="#222226")
+        self._drag_data = {"x": 0, "y": 0}
+        self.bind("<ButtonPress-1>", self.start_drag)
+        self.bind("<B1-Motion>", self.drag_motion)
+        
+        status_color = "#10b981" if state == "running" else "#ef4444"
+        status_label = "● RUNNING SEQUENCE" if state == "running" else "● RECORDING SEQUENCE"
+        
+        self.border = Canvas(self, width=340, height=110, bg="#09090b", highlightthickness=1.5, highlightbackground=status_color)
         self.border.pack(fill="both", expand=True)
         
-        self.status_text = self.border.create_text(15, 22, text="● MACRO ACTIVE", font=("Segoe UI", 11, "bold"), fill="#16a34a", anchor="w")
-        self.loop_text = self.border.create_text(15, 45, text="Loop Iterations: 0", font=("Consolas", 10), fill="#9ca3af", anchor="w")
+        self.border.create_rectangle(0, 0, 340, 28, fill="#121214", outline="")
+        self.status_text = self.border.create_text(15, 14, text=status_label, font=("Segoe UI", 10, "bold"), fill=status_color, anchor="w")
+        self.stats_text = self.border.create_text(15, 48, text="Loops: 0  |  Runtime: 00:00", font=("Consolas", 10, "bold"), fill="#f4f4f5", anchor="w")
+        self.action_text = self.border.create_text(15, 78, text="Action: Initializing...", font=("Segoe UI", 9), fill="#a1a1aa", anchor="w")
         
-        btn = ctk.CTkButton(self, text="STOP", width=65, height=34, fg_color="#dc2626", hover_color="#b91c1c", font=ctk.CTkFont(size=11, weight="bold"), command=stop_callback)
-        btn.place(x=180, y=18)
+        btn = ctk.CTkButton(self, text="STOP", width=60, height=24, fg_color="#dc2626", hover_color="#b91c1c", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), command=stop_callback)
+        btn.place(x=265, y=2)
+        
+        self.start_time = time.time()
+        self.loops = 0
+        self.state = state
+        self.captured_count = 0
+        
+        self.update_timer()
 
-    def update_stats(self, loops):
-        self.border.itemconfig(self.loop_text, text=f"Loop Iterations: {loops}")
+    def start_drag(self, event):
+        self._drag_data = {"x": event.x, "y": event.y}
+
+    def drag_motion(self, event):
+        deltax = event.x - self._drag_data["x"]
+        deltay = event.y - self._drag_data["y"]
+        x = self.winfo_x() + deltax
+        y = self.winfo_y() + deltay
+        self.geometry(f"+{x}+{y}")
+
+    def update_timer(self):
+        try:
+            elapsed = int(time.time() - self.start_time)
+            m, s = divmod(elapsed, 60)
+            time_str = f"{m:02d}:{s:02d}"
+            
+            if self.state == "running":
+                self.border.itemconfig(self.stats_text, text=f"Loops: {self.loops}  |  Runtime: {time_str}")
+            else:
+                self.border.itemconfig(self.stats_text, text=f"Captured: {self.captured_count}  |  Runtime: {time_str}")
+                
+            self.after(1000, self.update_timer)
+        except Exception:
+            pass
+
+    def set_active_action(self, desc):
+        try:
+            if len(desc) > 38:
+                desc = desc[:35] + "..."
+            self.border.itemconfig(self.action_text, text=f"Action: {desc}")
+        except Exception:
+            pass
+
+    def set_loops(self, count):
+        self.loops = count
+
+    def set_captured_count(self, count):
+        self.captured_count = count
+
+class ActionEditorModal(Toplevel):
+    def __init__(self, parent, index, action, save_callback):
+        super().__init__(parent)
+        self.title(f"Node #{index+1} Editor - {action['type'].replace('_',' ').upper()}")
+        self.geometry("450x520")
+        self.resizable(False, False)
+        self.configure(bg="#121214")
+        self.transient(parent)
+        self.grab_set()
+        
+        self.action = action
+        self.save_callback = save_callback
+        
+        # Frame
+        main_frame = ctk.CTkFrame(self, fg_color="#121214")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # Delay (Generic)
+        ctk.CTkLabel(main_frame, text="Delay (seconds):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+        self.delay_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+        self.delay_ent.insert(0, f"{action.get('delay', 0.1):.2f}")
+        self.delay_ent.pack(fill="x", pady=(0, 10))
+        
+        self.fields = {}
+        
+        if action['type'] == 'mouse':
+            # X coord
+            ctk.CTkLabel(main_frame, text="Relative X:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            x_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+            x_ent.insert(0, str(action.get('rel_x', 0)))
+            x_ent.pack(fill="x", pady=(0, 10))
+            self.fields['rel_x'] = x_ent
+            
+            # Y coord
+            ctk.CTkLabel(main_frame, text="Relative Y:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            y_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+            y_ent.insert(0, str(action.get('rel_y', 0)))
+            y_ent.pack(fill="x", pady=(0, 10))
+            self.fields['rel_y'] = y_ent
+            
+        elif action['type'] == 'keyboard':
+            # VK code
+            ctk.CTkLabel(main_frame, text="Virtual Key Code (VK):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            vk_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+            vk_ent.insert(0, str(action.get('vk', 0)))
+            vk_ent.pack(fill="x", pady=(0, 10))
+            self.fields['vk'] = vk_ent
+            
+            # Key name
+            ctk.CTkLabel(main_frame, text="Key Name:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            name_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+            name_ent.insert(0, str(action.get('name', '')))
+            name_ent.pack(fill="x", pady=(0, 10))
+            self.fields['name'] = name_ent
+            
+            # Release checkbox
+            self.rel_var = ctk.StringVar(value="on" if action.get('is_release', False) else "off")
+            rel_cb = ctk.CTkCheckBox(main_frame, text="Is Key Release Event", variable=self.rel_var, onvalue="on", offvalue="off")
+            rel_cb.pack(anchor="w", pady=5)
+            
+        elif action['type'] == 'image_match_wait':
+            # Confidence
+            ctk.CTkLabel(main_frame, text="Matching Confidence (0.5 - 1.0):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            conf_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+            conf_ent.insert(0, f"{action.get('confidence', 0.85):.2f}")
+            conf_ent.pack(fill="x", pady=(0, 10))
+            self.fields['confidence'] = conf_ent
+            
+            # Click matched checkbox
+            self.click_var = ctk.StringVar(value="on" if action.get('click_on_match', False) else "off")
+            click_cb = ctk.CTkCheckBox(main_frame, text="Click matched target center", variable=self.click_var, onvalue="on", offvalue="off")
+            click_cb.pack(anchor="w", pady=5)
+            
+            self.add_conditional_fields(main_frame, action)
+            
+        elif action['type'] == 'pixel_wait':
+            # X coord
+            ctk.CTkLabel(main_frame, text="Relative X:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            x_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+            x_ent.insert(0, str(action.get('rel_x', 0)))
+            x_ent.pack(fill="x", pady=(0, 10))
+            self.fields['rel_x'] = x_ent
+            
+            # Y coord
+            ctk.CTkLabel(main_frame, text="Relative Y:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            y_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+            y_ent.insert(0, str(action.get('rel_y', 0)))
+            y_ent.pack(fill="x", pady=(0, 10))
+            self.fields['rel_y'] = y_ent
+            
+            # Target color
+            ctk.CTkLabel(main_frame, text="Target Hex Color:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            color_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+            color_ent.insert(0, str(action.get('color', '#FFFFFF')))
+            color_ent.pack(fill="x", pady=(0, 10))
+            self.fields['color'] = color_ent
+            
+            self.add_conditional_fields(main_frame, action)
+            
+        elif action['type'] in ('ocr_wait', 'ocr_click'):
+            # Region (x, y, w, h)
+            ctk.CTkLabel(main_frame, text="Region Bounds (X, Y, W, H):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            reg_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+            reg_frame.pack(fill="x", pady=(0, 10))
+            
+            rx, ry, rw, rh = action.get('region', (0,0,100,100))
+            rx_ent = ctk.CTkEntry(reg_frame, width=80, fg_color="#09090b", border_color="#1e1e24")
+            rx_ent.insert(0, str(rx)); rx_ent.pack(side="left", padx=2)
+            ry_ent = ctk.CTkEntry(reg_frame, width=80, fg_color="#09090b", border_color="#1e1e24")
+            ry_ent.insert(0, str(ry)); ry_ent.pack(side="left", padx=2)
+            rw_ent = ctk.CTkEntry(reg_frame, width=80, fg_color="#09090b", border_color="#1e1e24")
+            rw_ent.insert(0, str(rw)); rw_ent.pack(side="left", padx=2)
+            rh_ent = ctk.CTkEntry(reg_frame, width=80, fg_color="#09090b", border_color="#1e1e24")
+            rh_ent.insert(0, str(rh)); rh_ent.pack(side="left", padx=2)
+            self.fields['region'] = (rx_ent, ry_ent, rw_ent, rh_ent)
+            
+            # Text query
+            label_text = "Text to Search & Click:" if action['type'] == 'ocr_click' else "Text to Wait For:"
+            ctk.CTkLabel(main_frame, text=label_text, font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            query_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
+            query_ent.insert(0, str(action.get('text_query', '')))
+            query_ent.pack(fill="x", pady=(0, 10))
+            self.fields['text_query'] = query_ent
+            
+            self.add_conditional_fields(main_frame, action)
+            
+        # Button frame
+        btn_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        btn_frame.pack(fill="x", side="bottom", pady=10)
+        
+        ctk.CTkButton(btn_frame, text="Save Changes", fg_color="#8b5cf6", hover_color="#6d28d9", font=ctk.CTkFont(weight="bold"), command=self.save).pack(side="left", expand=True, fill="x", padx=5)
+        ctk.CTkButton(btn_frame, text="Cancel", fg_color="#2b2d31", hover_color="#3d4047", command=self.destroy).pack(side="right", expand=True, fill="x", padx=5)
+
+    def add_conditional_fields(self, parent, action):
+        self.cond_var = ctk.StringVar(value="on" if action.get('is_conditional', False) else "off")
+        cond_cb = ctk.CTkCheckBox(parent, text="Is branching conditional check (Check once)", variable=self.cond_var, onvalue="on", offvalue="off")
+        cond_cb.pack(anchor="w", pady=5)
+        
+        goto_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        goto_frame.pack(fill="x", pady=5)
+        
+        ctk.CTkLabel(goto_frame, text="If True Goto Node #:").pack(side="left", padx=2)
+        gt_ent = ctk.CTkEntry(goto_frame, width=50, fg_color="#09090b", border_color="#1e1e24")
+        gt_ent.insert(0, str(action.get('goto_true') or ''))
+        gt_ent.pack(side="left", padx=5)
+        self.fields['goto_true'] = gt_ent
+        
+        ctk.CTkLabel(goto_frame, text="If False Goto Node #:").pack(side="left", padx=2)
+        gf_ent = ctk.CTkEntry(goto_frame, width=50, fg_color="#09090b", border_color="#1e1e24")
+        gf_ent.insert(0, str(action.get('goto_false') or ''))
+        gf_ent.pack(side="left", padx=5)
+        self.fields['goto_false'] = gf_ent
+
+    def save(self):
+        try:
+            self.action['delay'] = float(self.delay_ent.get())
+        except ValueError:
+            pass
+            
+        for k, v in self.fields.items():
+            if k == 'region':
+                try:
+                    self.action['region'] = (int(v[0].get()), int(v[1].get()), int(v[2].get()), int(v[3].get()))
+                except ValueError:
+                    pass
+            elif k in ('rel_x', 'rel_y', 'vk'):
+                try:
+                    self.action[k] = int(v.get())
+                except ValueError:
+                    pass
+            elif k in ('confidence'):
+                try:
+                    self.action[k] = float(v.get())
+                except ValueError:
+                    pass
+            elif k in ('goto_true', 'goto_false'):
+                val = v.get().strip()
+                self.action[k] = int(val) if val.isdigit() else None
+            else:
+                self.action[k] = v.get()
+                
+        if hasattr(self, 'rel_var'):
+            self.action['is_release'] = (self.rel_var.get() == "on")
+        if hasattr(self, 'click_var'):
+            self.action['click_on_match'] = (self.click_var.get() == "on")
+        if hasattr(self, 'cond_var'):
+            self.action['is_conditional'] = (self.cond_var.get() == "on")
+            
+        self.save_callback()
+        self.destroy()
 
 class MacroApp(ctk.CTk):
     def __init__(self):
@@ -186,6 +484,9 @@ class MacroApp(ctk.CTk):
         self.fuzz_switch_var = ctk.StringVar(value="on")
         
         self.global_trigger_image_path = None
+        self.global_text_trigger_text = ""
+        self.global_text_trigger_mode = "wait"
+        self.global_text_trigger_region = None
 
         self.ui_queue = queue.Queue()
         self.action_ui_rows = []
@@ -198,48 +499,141 @@ class MacroApp(ctk.CTk):
         self.dragged_index = None
         self.drag_y_start = 0
 
+        # Gamepad Analog Trigger Tracking Context Maps
+        self.last_lt_pressed = False
+        self.last_rt_pressed = False
+        
+        # THUMBSTICK LAST DIRECTIONAL STATE TRACKING MATRIX
+        self.last_ls_dir = "CENT"
+        self.last_rs_dir = "CENT"
+        
+        self.tracked_gamepad = None
+        if HAS_PYGAME:
+            pygame.init()
+            pygame.joystick.init()
+            threading.Thread(target=self.poll_controller_hardware_engine, daemon=True).start()
+
+        # Build structural anchors and placeholder cards
         self.setup_layout_grid()
-        self.start_global_hotkey_listeners()
-        self.check_ui_queue()
-
-    def setup_layout_grid(self):
-        self.grid_columnconfigure(0, weight=1, minsize=240) 
-        self.grid_columnconfigure(1, weight=3, minsize=360) 
-        self.grid_columnconfigure(2, weight=4, minsize=440) 
-        self.grid_rowconfigure(0, weight=1)
-
-        # PROFILE EXPLORER (LEFT PANEL)
-        self.sidebar_frame = ctk.CTkFrame(self, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
         
-        ctk.CTkLabel(self.sidebar_frame, text="📁 PROFILE EXPLORER", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=16, pady=(20, 10))
-        self.profile_listbox = ctk.CTkScrollableFrame(self.sidebar_frame, fg_color="#0c0c0e", border_color=BORDER_COLOR, border_width=1, corner_radius=6)
-        self.profile_listbox.pack(fill="both", expand=True, padx=14, pady=10)
-        
-        ctk.CTkButton(self.sidebar_frame, text="➕ Create Profile", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=12, weight="bold"), height=32, command=self.create_new_profile_entry).pack(fill="x", padx=14, pady=14)
-        self.refresh_profile_catalog_ui()
-
-        # PROPERTIES CONTROLS (MIDDLE PANEL)
-        self.middle_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.middle_frame.grid(row=0, column=1, sticky="nsew", padx=14, pady=14)
-
-        id_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
-        id_card.pack(fill="x", pady=(0, 12))
-        ctk.CTkLabel(id_card, text="Automation Pipeline Engine", font=ctk.CTkFont(size=16, weight="bold"), text_color=TEXT_MAIN).pack(pady=(12, 2))
-        self.status_label = ctk.CTkLabel(id_card, text="● STABLE SYSTEM IDLE", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MUTED)
-        self.status_label.pack(pady=(0, 12))
-
-        # TARGET ANCHOR STATUS DECK CARD
-        self.anchor_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
-        self.anchor_card.pack(fill="x", pady=6)
-        self.anchor_status_lbl = ctk.CTkLabel(self.anchor_card, text="Anchor Window: Independent", font=ctk.CTkFont(size=11, family="Consolas"), text_color=ACCENT_BLUE, anchor="w")
-        self.anchor_status_lbl.pack(side="left", padx=14, pady=10)
+        # ── FIXED: DELAYED ALL BUTTON INITIALIZATION COMMAND LOOPS TO THE DEEP END ──
+        # This completely guarantees that every single dynamic lookup executes crash-free.
         self.reset_anchor_btn = ctk.CTkButton(self.anchor_card, text="✕ Reset", width=60, height=20, fg_color="#2b2d31", hover_color=ACCENT_RED, text_color=TEXT_MUTED, font=ctk.CTkFont(size=10, weight="bold"), command=self.reset_anchor_window)
         self.reset_anchor_btn.pack(side="right", padx=14, pady=10)
 
-        # CENTER PANEL: GLOBAL IMAGE TRIGGER CONTROL
-        img_trigger_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
-        img_trigger_card.pack(fill="x", pady=6)
+        self.select_trigger_img_btn = ctk.CTkButton(self.btn_container, text="📂 Select Image File", fg_color="#2b2d31", hover_color="#3d4047", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.set_global_center_trigger_image)
+        self.select_trigger_img_btn.pack(side="left", expand=True, fill="x", padx=(4, 2))
+        self.snipe_trigger_img_btn = ctk.CTkButton(self.btn_container, text="🎯 Snipe Vision Node", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_global_center_screen_sniper)
+        self.snipe_trigger_img_btn.pack(side="right", expand=True, fill="x", padx=(2, 4))
+
+        self.play_btn = ctk.CTkButton(self.act_card, text=f"▶ Run Sequence ({self.selected_play_hotkey})", fg_color=ACCENT_GREEN, hover_color="#15803d", font=ctk.CTkFont(size=13, weight="bold"), height=40, command=self.toggle_playback)
+        self.play_btn.pack(fill="x", pady=3)
+        self.record_btn = ctk.CTkButton(self.act_card, text=f"🔴 Capture Sequence ({self.selected_record_hotkey})", fg_color=ACCENT_RED, hover_color="#b91c1c", font=ctk.CTkFont(size=13, weight="bold"), height=40, command=self.toggle_recording)
+        self.record_btn.pack(fill="x", pady=3)
+
+        self.rec_hk_btn = ctk.CTkButton(self.hk_body, text=self.selected_record_hotkey, width=120, height=26, fg_color="#222226", hover_color="#2d2d34", command=lambda: self.start_listening_for_hotkey('record'))
+        self.rec_hk_btn.grid(row=0, column=1, padx=2, pady=5, sticky="e")
+        self.play_hk_btn = ctk.CTkButton(self.hk_body, text=self.selected_play_hotkey, width=120, height=26, fg_color="#222226", hover_color="#2d2d34", command=lambda: self.start_listening_for_hotkey('play'))
+        self.play_hk_btn.grid(row=1, column=1, padx=2, pady=5, sticky="e")
+
+        self.add_manual_btn = ctk.CTkButton(self.et_container, text="➕ Add Keyboard Key", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.toggle_inline_action_listener)
+        self.add_manual_btn.pack(fill="x", expand=True, padx=2)
+
+        self.toggle_image_trigger_view()
+        self.toggle_text_trigger_view()
+        self.start_global_hotkey_listeners()
+        self.check_ui_queue()
+
+        # Hover Tooltips Configurations
+        CTKTooltip(self.reset_anchor_btn, "Clear the anchored window target to make the macro run relative to the full screen.")
+        CTKTooltip(self.select_trigger_img_btn, "Load a global trigger image from disk. The sequence will not run until this image is detected on screen.")
+        CTKTooltip(self.snipe_trigger_img_btn, "Snip a global trigger image directly from your screen.")
+        CTKTooltip(self.play_btn, "Start executing the timeline actions in a loop or single iteration.")
+        CTKTooltip(self.record_btn, "Record keyboard and mouse inputs dynamically in real-time from active windows.")
+        CTKTooltip(self.rec_hk_btn, "Click to assign a new hotkey to start/stop sequence recording.")
+        CTKTooltip(self.play_hk_btn, "Click to assign a new hotkey to start/stop sequence playback.")
+        CTKTooltip(self.add_ocr_click_btn, "Add text to Wait & Click. If 'Scan Whole Screen' is on, it scans the whole screen; otherwise, it triggers snipping.")
+        CTKTooltip(self.add_ocr_wait_btn, "Add text to Wait for. If 'Scan Whole Screen' is on, it scans the whole screen; otherwise, it triggers snipping.")
+        CTKTooltip(self.add_manual_btn, "Click to listen for a single mouse click or keyboard key press to add directly to the timeline.")
+        CTKTooltip(self.save_btn, "Export the current macro actions list and settings to a JSON file.")
+        CTKTooltip(self.load_btn, "Import macro actions list and settings from a JSON file.")
+        CTKTooltip(self.create_profile_btn, "Create a new empty macro profile vector in your profile database.")
+        CTKTooltip(self.clear_timeline_btn, "Remove all actions from the current pipeline timeline.")
+
+    def setup_layout_grid(self):
+        # Configure layout with a top header and three main columns
+        self.grid_rowconfigure(0, weight=0) # Header row
+        self.grid_rowconfigure(1, weight=1) # Main workspace row
+        self.grid_columnconfigure(0, weight=1, minsize=240) 
+        self.grid_columnconfigure(1, weight=3, minsize=380) 
+        self.grid_columnconfigure(2, weight=4, minsize=440) 
+
+        # ── TOP BRANDING & STATUS HEADER ──────────────────────────────────────────
+        header_frame = ctk.CTkFrame(self, fg_color=HEADER_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=0, height=56)
+        header_frame.grid(row=0, column=0, columnspan=3, sticky="ew")
+        header_frame.pack_propagate(False)
+        
+        # Logo and Title
+        brand_lbl = ctk.CTkLabel(header_frame, text="⚡ VISION MACRO PRO", font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"), text_color=ACCENT_PURPLE)
+        brand_lbl.pack(side="left", padx=20)
+        
+        # State capsule badge
+        status_badge_frame = ctk.CTkFrame(header_frame, fg_color="#18181b", border_color=BORDER_COLOR, border_width=1, corner_radius=14, height=28)
+        status_badge_frame.pack(side="right", padx=20, pady=14)
+        status_badge_frame.pack_propagate(True)
+        
+        self.status_label = ctk.CTkLabel(status_badge_frame, text="● STABLE SYSTEM IDLE", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=TEXT_MUTED, padx=12, pady=4)
+        self.status_label.pack()
+
+        # ── PROFILE EXPLORER (LEFT PANEL) ─────────────────────────────────────────
+        self.sidebar_frame = ctk.CTkFrame(self, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=0)
+        self.sidebar_frame.grid(row=1, column=0, sticky="nsew")
+        
+        ctk.CTkLabel(self.sidebar_frame, text="📁 PROFILE EXPLORER", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=16, pady=(20, 10))
+        self.profile_listbox = ctk.CTkScrollableFrame(self.sidebar_frame, fg_color=APP_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=6)
+        self.profile_listbox.pack(fill="both", expand=True, padx=14, pady=10)
+        
+        self.create_profile_btn = ctk.CTkButton(self.sidebar_frame, text="➕ Create Profile", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=12, weight="bold"), height=32, command=self.create_new_profile_entry)
+        self.create_profile_btn.pack(fill="x", padx=14, pady=14)
+
+        # ── PROPERTIES CONTROLS (MIDDLE PANEL - TABBED VIEW) ──────────────────────
+        self.middle_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.middle_frame.grid(row=1, column=1, sticky="nsew", padx=14, pady=14)
+
+        # Segmented Tab View
+        self.tabview = ctk.CTkTabview(
+            self.middle_frame, 
+            fg_color=PANEL_BG, 
+            border_color=BORDER_COLOR, 
+            border_width=1, 
+            corner_radius=10,
+            segmented_button_fg_color=APP_BG,
+            segmented_button_selected_color=ACCENT_PURPLE,
+            segmented_button_selected_hover_color="#6d28d9",
+            segmented_button_unselected_color=PANEL_BG,
+            segmented_button_unselected_hover_color="#1a1a1e",
+            text_color=TEXT_MAIN
+        )
+        self.tabview.pack(fill="both", expand=True, padx=2, pady=2)
+        
+        tab_desk = self.tabview.add("🎮 Action Desk")
+        tab_drivers = self.tabview.add("⌨️ Drivers")
+        tab_backup = self.tabview.add("💾 Backup")
+
+        # ── Tab 1: Action Desk Controls ──
+        # Workspace action buttons
+        self.act_card = ctk.CTkFrame(tab_desk, fg_color="transparent")
+        self.act_card.pack(fill="x", pady=6, padx=8)
+
+        # Anchor window configuration card
+        self.anchor_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
+        self.anchor_card.pack(fill="x", pady=6, padx=8)
+        self.anchor_status_lbl = ctk.CTkLabel(self.anchor_card, text="Anchor Window: Independent", font=ctk.CTkFont(size=11, family="Consolas"), text_color=ACCENT_BLUE, anchor="w")
+        self.anchor_status_lbl.pack(side="left", padx=14, pady=10)
+
+        # Global vision image trigger card
+        img_trigger_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
+        img_trigger_card.pack(fill="x", pady=6, padx=8)
         
         self.trigger_header_container = ctk.CTkFrame(img_trigger_card, fg_color="transparent")
         self.trigger_header_container.pack(fill="x", padx=12, pady=4)
@@ -254,46 +648,57 @@ class MacroApp(ctk.CTk):
         self.clear_img_trigger_btn = ctk.CTkButton(self.trigger_header_container, text="❌ Clear", width=55, height=18, fg_color="#2b2d31", hover_color=ACCENT_RED, text_color=TEXT_MUTED, font=ctk.CTkFont(size=10, weight="bold"), command=self.remove_global_trigger_image)
         
         self.btn_container = ctk.CTkFrame(img_trigger_card, fg_color="transparent")
+        self.trigger_image_label = ctk.CTkLabel(img_trigger_card, text="No trigger image selected", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MUTED)
+        self.center_preview_label = ctk.CTkLabel(img_trigger_card, text="")
+
+        # ── Action Desk Vision Actions Creator Card ──
+        vision_actions_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
+        vision_actions_card.pack(fill="x", pady=6, padx=8)
         
-        self.select_trigger_img_btn = ctk.CTkButton(self.btn_container, text="📂 Select Image File", fg_color="#2b2d31", hover_color="#3d4047", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.set_global_center_trigger_image)
-        self.select_trigger_img_btn.pack(side="left", expand=True, fill="x", padx=(4, 2))
+        self.text_trigger_header_container = ctk.CTkFrame(vision_actions_card, fg_color="transparent")
+        self.text_trigger_header_container.pack(fill="x", padx=12, pady=4)
         
-        self.snipe_trigger_img_btn = ctk.CTkButton(self.btn_container, text="🎯 Snipe Vision Node", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_global_center_screen_sniper)
-        self.snipe_trigger_img_btn.pack(side="right", expand=True, fill="x", padx=(2, 4))
-
-        self.center_preview_label = ctk.CTkLabel(img_trigger_card, text="", height=1)
-
-        # ── REORDERED RUN CONTROL ARRAYS SHIFTED HIGHER UP (image_23fe18.png Layout Match) ──
-        act_card = ctk.CTkFrame(self.middle_frame, fg_color="transparent")
-        act_card.pack(fill="x", pady=6)
-        self.play_btn = ctk.CTkButton(act_card, text=f"▶ Run Sequence ({self.selected_play_hotkey})", fg_color=ACCENT_GREEN, hover_color="#15803d", font=ctk.CTkFont(size=13, weight="bold"), height=40, command=self.toggle_playback)
-        self.play_btn.pack(fill="x", pady=3)
-        self.record_btn = ctk.CTkButton(act_card, text=f"🔴 Capture Sequence ({self.selected_record_hotkey})", fg_color=ACCENT_RED, hover_color="#b91c1c", font=ctk.CTkFont(size=13, weight="bold"), height=40, command=self.toggle_recording)
-        self.record_btn.pack(fill="x", pady=3)
-
-        hk_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
-        hk_card.pack(fill="x", pady=6)
-        ctk.CTkLabel(hk_card, text="⌨️  SYSTEM HOTKEY DRIVERS", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=12, pady=6)
+        self.text_trigger_status_title = ctk.CTkLabel(self.text_trigger_header_container, text="📝 GLOBAL SEQUENCE TEXT TRIGGER", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN)
+        self.text_trigger_status_title.pack(side="left", pady=4)
         
-        hk_body = ctk.CTkFrame(hk_card, fg_color="transparent")
-        hk_body.pack(fill="x", padx=14, pady=8)
-        hk_body.grid_columnconfigure(0, weight=1)
-        hk_body.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(hk_body, text="Record Shortcut Key:", text_color=TEXT_MUTED, font=ctk.CTkFont(size=12)).grid(row=0, column=0, padx=2, pady=5, sticky="w")
-        self.rec_hk_btn = ctk.CTkButton(hk_body, text=self.selected_record_hotkey, width=120, height=26, fg_color="#222226", hover_color="#2d2d34", command=lambda: self.start_listening_for_hotkey('record'))
-        self.rec_hk_btn.grid(row=0, column=1, padx=2, pady=5, sticky="e")
+        self.text_trigger_switch_var = ctk.StringVar(value="off")
+        self.text_trigger_switch = ctk.CTkSwitch(self.text_trigger_header_container, text="", variable=self.text_trigger_switch_var, onvalue="on", offvalue="off", width=40, command=self.toggle_text_trigger_view)
+        self.text_trigger_switch.pack(side="right", padx=2)
         
-        ctk.CTkLabel(hk_body, text="Playback Shortcut Key:", text_color=TEXT_MUTED, font=ctk.CTkFont(size=12)).grid(row=1, column=0, padx=2, pady=5, sticky="w")
-        self.play_hk_btn = ctk.CTkButton(hk_body, text=self.selected_play_hotkey, width=120, height=26, fg_color="#222226", hover_color="#2d2d34", command=lambda: self.start_listening_for_hotkey('play'))
-        self.play_hk_btn.grid(row=1, column=1, padx=2, pady=5, sticky="e")
+        self.clear_text_trigger_btn = ctk.CTkButton(self.text_trigger_header_container, text="❌ Clear", width=55, height=18, fg_color="#2b2d31", hover_color=ACCENT_RED, text_color=TEXT_MUTED, font=ctk.CTkFont(size=10, weight="bold"), command=self.remove_global_text_trigger)
+        
+        self.text_trigger_container = ctk.CTkFrame(vision_actions_card, fg_color="transparent")
+        
+        # Inline text query entry field
+        self.vision_query_entry = ctk.CTkEntry(self.text_trigger_container, placeholder_text="Enter text to search or wait for...", fg_color=APP_BG, border_color=BORDER_COLOR, height=28)
+        self.vision_query_entry.pack(fill="x", padx=12, pady=(2, 6))
+        
+        self.ocr_whole_screen_var = ctk.StringVar(value="on")
+        self.ocr_whole_screen_switch = ctk.CTkSwitch(self.text_trigger_container, text="Scan Whole Screen", variable=self.ocr_whole_screen_var, onvalue="on", offvalue="off", font=ctk.CTkFont(size=12), command=self.update_ocr_text_label)
+        self.ocr_whole_screen_switch.pack(anchor="w", padx=14, pady=4)
+        
+        v_btn_frame = ctk.CTkFrame(self.text_trigger_container, fg_color="transparent")
+        v_btn_frame.pack(fill="x", padx=12, pady=(2, 10))
+        
+        self.add_ocr_click_btn = ctk.CTkButton(v_btn_frame, text="🔍 Wait & Click Text", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_ocr_click_flow)
+        self.add_ocr_click_btn.pack(side="left", fill="x", expand=True, padx=2)
+        
+        self.add_ocr_wait_btn = ctk.CTkButton(v_btn_frame, text="📝 Wait for Text", fg_color=ACCENT_GREEN, hover_color="#059669", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_ocr_wait_flow)
+        self.add_ocr_wait_btn.pack(side="left", fill="x", expand=True, padx=2)
 
-        # PARAMS DECK (LOWER SPACE CONFIGS)
-        self.dynamic_loop_inputs = ctk.CTkFrame(self.middle_frame, fg_color="transparent")
-        self.dynamic_loop_inputs.pack(fill="x", pady=2)
+        self.ocr_text_label = ctk.CTkLabel(self.text_trigger_container, text="No text query active", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MUTED)
+        self.ocr_text_label.pack(pady=(2, 10))
+        self.vision_query_entry.bind("<KeyRelease>", self.update_ocr_text_label)
 
-        drv_card = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
-        drv_card.pack(fill="x", pady=6)
+        # ── Action Desk: Configurations & Humanization (Merged Settings) ──
+        # Dynamic inputs packed when loop mode is clicked
+        from tkinter import Frame
+        self.dynamic_loop_inputs = Frame(tab_desk, bg=PANEL_BG, bd=0, highlightthickness=0)
+        self.dynamic_loop_inputs.pack(fill="x", pady=2, padx=8)
+
+        # Loop modes
+        drv_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
+        drv_card.pack(fill="x", pady=6, padx=8)
         ctk.CTkLabel(drv_card, text="⏱️ INTERACTION CONFIGURATIONS", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=12, pady=6)
         db = ctk.CTkFrame(drv_card, fg_color="transparent")
         db.pack(fill="x", padx=14, pady=8)
@@ -301,39 +706,163 @@ class MacroApp(ctk.CTk):
         ctk.CTkRadioButton(db, text="Infinite Processing Loops", variable=self.loop_var, value="Loop", font=ctk.CTkFont(size=12), command=self.change_loop_mode).pack(anchor="w", pady=2)
         ctk.CTkRadioButton(db, text="Custom Loop Count Iterations", variable=self.loop_var, value="Count", font=ctk.CTkFont(size=12), command=self.change_loop_mode).pack(anchor="w", pady=2)
 
-        hb = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
-        hb.pack(fill="x", pady=6)
+        # Anti-Detection
+        hb = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
+        hb.pack(fill="x", pady=6, padx=8)
         ctk.CTkLabel(hb, text="🛡️ ANTI-DETECTION HUMANIZATION", font=ctk.CTkFont(size=11, weight="bold"), text_color=ACCENT_GREEN).pack(anchor="w", padx=12, pady=6)
         hbb = ctk.CTkFrame(hb, fg_color="transparent")
         hbb.pack(fill="x", padx=14, pady=8)
         ctk.CTkSwitch(hbb, text="Enable Organic Bézier Curves", font=ctk.CTkFont(size=12), variable=self.bezier_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Randomize Target Jitter", font=ctk.CTkFont(size=12), variable=self.fuzz_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
 
-        fb = ctk.CTkFrame(self.middle_frame, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=10)
-        fb.pack(fill="x", pady=6)
-        ctk.CTkButton(fb, text="💾 Save to JSON", fg_color="#1a1a22", text_color=TEXT_MAIN, height=32, command=self.export_macro).pack(side="left", expand=True, fill="x", padx=8, pady=10)
-        ctk.CTkButton(fb, text="📂 Load JSON", fg_color="#1a1a22", text_color=TEXT_MAIN, height=32, command=self.import_macro).pack(side="right", expand=True, fill="x", padx=8, pady=10)
+        # ── Tab 3: Shortcut Drivers & Controller ──
+        # System Hotkeys bind box
+        self.hk_card = ctk.CTkFrame(tab_drivers, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
+        self.hk_card.pack(fill="x", pady=6, padx=8)
+        ctk.CTkLabel(self.hk_card, text="⌨️  SYSTEM HOTKEY DRIVERS", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=12, pady=6)
+        
+        self.hk_body = ctk.CTkFrame(self.hk_card, fg_color="transparent")
+        self.hk_body.pack(fill="x", padx=14, pady=8)
+        self.hk_body.grid_columnconfigure(0, weight=1)
+        self.hk_body.grid_columnconfigure(1, weight=1)
 
-        # TIMELINE FLOW (RIGHT PANEL)
+        ctk.CTkLabel(self.hk_body, text="Record Shortcut Key:", text_color=TEXT_MUTED, font=ctk.CTkFont(size=12)).grid(row=0, column=0, padx=2, pady=5, sticky="w")
+        ctk.CTkLabel(self.hk_body, text="Playback Shortcut Key:", text_color=TEXT_MUTED, font=ctk.CTkFont(size=12)).grid(row=1, column=0, padx=2, pady=5, sticky="w")
+
+        # Gamepad status
+        gp_card = ctk.CTkFrame(tab_drivers, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
+        gp_card.pack(fill="x", pady=6, padx=8)
+        ctk.CTkLabel(gp_card, text="🎮 GAMEPAD POLLING MATRIX", font=ctk.CTkFont(size=11, weight="bold"), text_color=ACCENT_PURPLE).pack(anchor="w", padx=12, pady=6)
+        gp_body = ctk.CTkFrame(gp_card, fg_color="transparent")
+        gp_body.pack(fill="x", padx=14, pady=8)
+        gp_status_text = "Status: ACTIVE POLLING HOOKS" if HAS_PYGAME else "Status: PYGAME NOT INSTALLED"
+        gp_color = ACCENT_GREEN if HAS_PYGAME else TEXT_MUTED
+        ctk.CTkLabel(gp_body, text=gp_status_text, font=ctk.CTkFont(family="Consolas", size=11), text_color=gp_color).pack(anchor="w")
+
+        # ── Tab 4: Backup Profiles ──
+        fb = ctk.CTkFrame(tab_backup, fg_color="transparent")
+        fb.pack(fill="both", expand=True, padx=12, pady=12)
+        ctk.CTkLabel(fb, text="💾 PROFILE STORAGE CONFIGURATIONS", font=ctk.CTkFont(size=12, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(fb, text="Backup or load your timeline actions and anchor target options to/from a profile file.", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED, wraplength=310, justify="left").pack(anchor="w", pady=(0, 20))
+        
+        self.save_btn = ctk.CTkButton(fb, text="💾 Save Profile to JSON", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=12, weight="bold"), height=36, command=self.export_macro)
+        self.save_btn.pack(fill="x", pady=6)
+        self.load_btn = ctk.CTkButton(fb, text="📂 Load Profile from JSON", fg_color="#2b2d31", hover_color="#3d4047", font=ctk.CTkFont(size=12, weight="bold"), height=36, command=self.import_macro)
+        self.load_btn.pack(fill="x", pady=6)
+
+        # ── TIMELINE FLOW (RIGHT PANEL) ───────────────────────────────────────────
         self.right_frame = ctk.CTkFrame(self, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=12)
-        self.right_frame.grid(row=0, column=2, sticky="nsew", padx=20, pady=20)
+        self.right_frame.grid(row=1, column=2, sticky="nsew", padx=20, pady=20)
 
         th = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         th.pack(fill="x", pady=(16, 10), padx=16)
         ctk.CTkLabel(th, text="Visual Pipeline Flow", font=ctk.CTkFont(size=15, weight="bold"), text_color=TEXT_MAIN).pack(side="left")
-        ctk.CTkButton(th, text="🗑️ Clear Timeline", fg_color=ACCENT_RED, hover_color="#b91c1c", font=ctk.CTkFont(size=11, weight="bold"), width=110, height=28, command=self.clear_macro).pack(side="right")
+        self.clear_timeline_btn = ctk.CTkButton(th, text="🗑️ Clear Timeline", fg_color=ACCENT_RED, hover_color="#b91c1c", font=ctk.CTkFont(size=11, weight="bold"), width=110, height=28, command=self.clear_macro)
+        self.clear_timeline_btn.pack(side="right")
 
-        self.timeline_scroll = ctk.CTkScrollableFrame(self.right_frame, fg_color="#09090b", border_color=BORDER_COLOR, border_width=1, corner_radius=8)
+        self.timeline_scroll = ctk.CTkScrollableFrame(self.right_frame, fg_color=APP_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
         self.timeline_scroll.pack(fill="both", expand=True, padx=16, pady=4)
 
-        et = ctk.CTkFrame(self.right_frame, fg_color="transparent")
-        et.pack(fill="x", pady=14, padx=16)
-        
-        self.add_image_node_btn = ctk.CTkButton(et, text="📸 Snip Image Search", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_screen_sniper_flow)
-        self.add_image_node_btn.pack(side="left", padx=2)
+        self.et_container = ctk.CTkFrame(self.right_frame, fg_color="transparent")
+        self.et_container.pack(fill="x", pady=14, padx=16)
 
-        self.add_manual_btn = ctk.CTkButton(et, text="➕ Add Keyboard Key", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.toggle_inline_action_listener)
-        self.add_manual_btn.pack(side="right", padx=2)
+    def poll_controller_hardware_engine(self):
+        while True:
+            if not self.is_recording:
+                time.sleep(0.5)
+                continue
+
+            if pygame.joystick.get_count() > 0 and not self.tracked_gamepad:
+                self.tracked_gamepad = pygame.joystick.Joystick(0)
+                self.tracked_gamepad.init()
+
+            for event in pygame.event.get():
+                if not self.is_recording:
+                    continue
+
+                d = time.time() - self.start_time
+                self.start_time = time.time()
+
+                if event.type == pygame.JOYBUTTONDOWN:
+                    self.after(0, lambda ev=event, dt=d: self.add_single_action_to_live_ui({
+                        'type': 'controller', 'action': 'button_down', 'index': ev.button, 'delay': dt
+                    }))
+
+                elif event.type == pygame.JOYBUTTONUP:
+                    self.after(0, lambda ev=event, dt=d: self.add_single_action_to_live_ui({
+                        'type': 'controller', 'action': 'button_up', 'index': ev.button, 'delay': dt
+                    }))
+
+                elif event.type == pygame.JOYHATMOTION:
+                    h_x, h_y = event.value
+                    hat_name = "D-Pad CENT"
+                    if h_y == 1: hat_name = "D-Pad UP"
+                    elif h_y == -1: hat_name = "D-Pad DOWN"
+                    elif h_x == -1: hat_name = "D-Pad LEFT"
+                    elif h_x == 1: hat_name = "D-Pad RIGHT"
+
+                    self.after(0, lambda name=hat_name, dt=d: self.add_single_action_to_live_ui({
+                        'type': 'controller', 'action': 'hat_move', 'name': name, 'delay': dt
+                    }))
+
+                elif event.type == pygame.JOYAXISMOTION:
+                    if not self.tracked_gamepad:
+                        continue
+                    num_axes = self.tracked_gamepad.get_numaxes()
+                    
+                    lt_val = self.tracked_gamepad.get_axis(4) if num_axes > 4 else -1.0
+                    rt_val = self.tracked_gamepad.get_axis(5) if num_axes > 5 else -1.0
+                    
+                    lt_pressed = lt_val > 0.0
+                    rt_pressed = rt_val > 0.0
+
+                    if lt_pressed != self.last_lt_pressed:
+                        self.last_lt_pressed = lt_pressed
+                        act_type = 'trigger_down' if lt_pressed else 'trigger_up'
+                        self.after(0, lambda act=act_type, dt=d: self.add_single_action_to_live_ui({
+                            'type': 'controller', 'action': act, 'name': 'LT (Left Trigger)', 'delay': dt
+                        }))
+
+                    if rt_pressed != self.last_rt_pressed:
+                        self.last_rt_pressed = rt_pressed
+                        act_type = 'trigger_down' if rt_pressed else 'trigger_up'
+                        self.after(0, lambda act=act_type, dt=d: self.add_single_action_to_live_ui({
+                            'type': 'controller', 'action': act, 'name': 'RT (Right Trigger)', 'delay': dt
+                        }))
+
+                    ls_x = self.tracked_gamepad.get_axis(0) if num_axes > 0 else 0.0
+                    ls_y = self.tracked_gamepad.get_axis(1) if num_axes > 1 else 0.0
+                    
+                    current_ls_dir = "CENT"
+                    if abs(ls_x) > 0.40 or abs(ls_y) > 0.40:
+                        if abs(ls_x) > abs(ls_y):
+                            current_ls_dir = "LS RIGHT" if ls_x > 0 else "LS LEFT"
+                        else:
+                            current_ls_dir = "LS DOWN" if ls_y > 0 else "LS UP"
+
+                    if current_ls_dir != self.last_ls_dir:
+                        self.last_ls_dir = current_ls_dir
+                        self.after(0, lambda name=current_ls_dir, dt=d: self.add_single_action_to_live_ui({
+                            'type': 'controller', 'action': 'stick_move', 'name': name, 'delay': dt
+                        }))
+
+                    rs_x = self.tracked_gamepad.get_axis(2) if num_axes > 2 else 0.0
+                    rs_y = self.tracked_gamepad.get_axis(3) if num_axes > 3 else 0.0
+                    
+                    current_rs_dir = "CENT"
+                    if abs(rs_x) > 0.40 or abs(rs_y) > 0.40:
+                        if abs(rs_x) > abs(rs_y):
+                            current_rs_dir = "RS RIGHT" if rs_x > 0 else "RS LEFT"
+                        else:
+                            current_rs_dir = "RS DOWN" if rs_y > 0 else "RS UP"
+
+                    if current_rs_dir != self.last_rs_dir:
+                        self.last_rs_dir = current_rs_dir
+                        self.after(0, lambda name=current_rs_dir, dt=d: self.add_single_action_to_live_ui({
+                            'type': 'controller', 'action': 'stick_move', 'name': name, 'delay': dt
+                        }))
+
+            time.sleep(0.016)
 
     def reset_anchor_window(self):
         self.recorded_target_hwnd = None
@@ -343,29 +872,45 @@ class MacroApp(ctk.CTk):
     def toggle_image_trigger_view(self):
         if self.img_trigger_switch_var.get() == "on":
             self.btn_container.pack(fill="x", padx=10, pady=(2, 10))
+            self.trigger_image_label.pack(pady=(2, 10))
             if self.global_trigger_image_path and os.path.exists(self.global_trigger_image_path):
-                self.center_preview_label.pack(fill="x", padx=14, pady=(2, 10))
                 self.clear_img_trigger_btn.pack(side="right", padx=6, pady=2)
+                self.render_center_panel_preview(self.global_trigger_image_path)
         else:
             self.btn_container.pack_forget()
-            self.center_preview_label.pack_forget()
+            self.trigger_image_label.pack_forget()
             self.clear_img_trigger_btn.pack_forget()
+            self.render_center_panel_preview(None)
 
     def render_center_panel_preview(self, path):
         try:
             if path and os.path.exists(path):
                 img = Image.open(path)
-                img.thumbnail((260, 90)) 
+                img.thumbnail((200, 100))
                 ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(img.width, img.height))
-                self.center_preview_label.configure(image=ctk_img, height=img.height)
-                self.center_preview_label.image = ctk_img
-                if self.img_trigger_switch_var.get() == "on":
-                    self.center_preview_label.pack(fill="x", padx=14, pady=(2, 10))
+                self.center_preview_label.configure(image=ctk_img, text="")
+                self.center_preview_label.image = ctk_img  # Reference to avoid GC
+                self.center_preview_label.pack(pady=(5, 10))
             else:
-                self.center_preview_label.configure(image=None, height=1)
+                self.center_preview_label.configure(image=None, text="")
                 self.center_preview_label.pack_forget()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Preview Error: {e}")
+
+    def toggle_text_trigger_view(self):
+        if self.text_trigger_switch_var.get() == "on":
+            self.text_trigger_container.pack(fill="x", pady=2)
+            if self.global_text_trigger_text:
+                self.clear_text_trigger_btn.pack(side="right", padx=6, pady=2)
+        else:
+            self.text_trigger_container.pack_forget()
+            self.clear_text_trigger_btn.pack_forget()
+
+    def remove_global_text_trigger(self):
+        self.global_text_trigger_text = ""
+        self.global_text_trigger_region = None
+        self.ocr_text_label.configure(text="No text query active", text_color=TEXT_MUTED)
+        self.clear_text_trigger_btn.pack_forget()
 
     def set_global_center_trigger_image(self):
         fp = filedialog.askopenfilename(title="Select Trigger Image Snippet", filetypes=[("Images", "*.png *.jpg *.jpeg")])
@@ -374,17 +919,18 @@ class MacroApp(ctk.CTk):
             fn = os.path.basename(fp)
             self.trigger_status_title.configure(text=f"📷 TRIGGER IMAGE BOUND: {fn.upper()}", text_color=ACCENT_GREEN)
             self.clear_img_trigger_btn.pack(side="right", padx=6, pady=2)
+            self.trigger_image_label.configure(text=f"Trigger Image: {fn}", text_color=ACCENT_GREEN)
             self.render_center_panel_preview(fp)
 
     def trigger_global_center_screen_sniper(self):
         if self.is_playing or self.is_recording: return
         self.withdraw()
         time.sleep(0.2)
-        ScreenSnipper(self.process_center_panel_sniped_trigger)
+        ScreenSnipper(self, self.process_center_panel_sniped_trigger)
 
     def process_center_panel_sniped_trigger(self, x, y, w, h):
-        self.deiconify()
         captured_matrix = pyautogui.screenshot(region=(x, y, w, h))
+        self.deiconify()
         os.makedirs("./assets", exist_ok=True)
         assigned_path = f"./assets/global_trigger_active.png"
         captured_matrix.save(assigned_path)
@@ -392,6 +938,7 @@ class MacroApp(ctk.CTk):
         self.global_trigger_image_path = assigned_path
         self.trigger_status_title.configure(text="📷 TRIGGER SNIP BOUND SUCCESSFUL", text_color=ACCENT_GREEN)
         self.clear_img_trigger_btn.pack(side="right", padx=6, pady=2)
+        self.trigger_image_label.configure(text="Trigger Image: global_trigger_active.png (Sniped)", text_color=ACCENT_GREEN)
         self.render_center_panel_preview(assigned_path)
 
     def remove_global_trigger_image(self):
@@ -399,6 +946,7 @@ class MacroApp(ctk.CTk):
         self.trigger_status_title.configure(text="📸 GLOBAL SEQUENCE IMAGE TRIGGER", text_color=TEXT_MAIN)
         self.clear_img_trigger_btn.pack_forget()
         self.render_center_panel_preview(None)
+        self.trigger_image_label.configure(text="No trigger image selected", text_color=TEXT_MUTED)
 
     def clear_macro(self):
         if self.is_playing or self.is_recording: return
@@ -434,11 +982,11 @@ class MacroApp(ctk.CTk):
         if self.is_playing or self.is_recording: return
         self.withdraw() 
         time.sleep(0.2)
-        ScreenSnipper(self.process_sniped_bounding_box_assets)
+        ScreenSnipper(self, self.process_sniped_bounding_box_assets)
 
     def process_sniped_bounding_box_assets(self, x, y, w, h):
-        self.deiconify() 
         sniped_img = pyautogui.screenshot(region=(x, y, w, h))
+        self.deiconify()
         os.makedirs("./assets", exist_ok=True)
         asset_path = f"./assets/snippet_{int(time.time())}.png"
         sniped_img.save(asset_path)
@@ -449,6 +997,176 @@ class MacroApp(ctk.CTk):
             'confidence': 0.85,
             'delay': 0.5
         })
+
+    def trigger_ocr_wait_flow(self):
+        if self.is_playing or self.is_recording: return
+        if self.ocr_whole_screen_var.get() == "on":
+            text_query = self.vision_query_entry.get().strip()
+            if not text_query:
+                dialog = ctk.CTkInputDialog(text="Enter the text query to wait for:", title="OCR Text Query")
+                text_query = dialog.get_input()
+            if text_query:
+                self.global_text_trigger_region = None
+                self.global_text_trigger_text = text_query
+                self.global_text_trigger_mode = "wait"
+                self.text_trigger_switch_var.set("on")
+                self.toggle_text_trigger_view()
+                self.ocr_text_label.configure(
+                    text=f"Trigger Text (WAIT): \"{text_query}\" on Whole Screen",
+                    text_color=ACCENT_GREEN
+                )
+                self.vision_query_entry.delete(0, 'end')
+                self.vision_query_entry.insert(0, text_query)
+        else:
+            self.withdraw()
+            time.sleep(0.2)
+            ScreenSnipper(self, self.process_ocr_wait_region)
+        
+    def process_ocr_wait_region(self, x, y, w, h):
+        self.deiconify()
+        text_query = self.vision_query_entry.get().strip()
+        if not text_query:
+            dialog = ctk.CTkInputDialog(text="Enter the text query to wait for:", title="OCR Text Query")
+            text_query = dialog.get_input()
+        if text_query:
+            # Convert region relative to anchor window if active
+            rel_x, rel_y = x, y
+            if self.recorded_target_hwnd:
+                rect = RECT()
+                if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
+                    rel_x = x - rect.left
+                    rel_y = y - rect.top
+                    
+            self.global_text_trigger_region = (rel_x, rel_y, w, h)
+            self.global_text_trigger_text = text_query
+            self.global_text_trigger_mode = "wait"
+            self.text_trigger_switch_var.set("on")
+            self.toggle_text_trigger_view()
+            self.ocr_text_label.configure(
+                text=f"Trigger Text (WAIT): \"{text_query}\" in Region ({rel_x}, {rel_y}, {w}, {h})",
+                text_color=ACCENT_GREEN
+            )
+            self.vision_query_entry.delete(0, 'end')
+            self.vision_query_entry.insert(0, text_query)
+
+    def trigger_ocr_click_flow(self):
+        if self.is_playing or self.is_recording: return
+        if self.ocr_whole_screen_var.get() == "on":
+            text_query = self.vision_query_entry.get().strip()
+            if not text_query:
+                dialog = ctk.CTkInputDialog(text="Enter the text query to search and click on:", title="OCR Click Text Query")
+                text_query = dialog.get_input()
+            if text_query:
+                self.global_text_trigger_region = None
+                self.global_text_trigger_text = text_query
+                self.global_text_trigger_mode = "click"
+                self.text_trigger_switch_var.set("on")
+                self.toggle_text_trigger_view()
+                self.ocr_text_label.configure(
+                    text=f"Trigger Text (CLICK): \"{text_query}\" on Whole Screen",
+                    text_color=ACCENT_GREEN
+                )
+                self.vision_query_entry.delete(0, 'end')
+                self.vision_query_entry.insert(0, text_query)
+        else:
+            self.withdraw()
+            time.sleep(0.2)
+            ScreenSnipper(self, self.process_ocr_click_region)
+
+    def process_ocr_click_region(self, x, y, w, h):
+        self.deiconify()
+        text_query = self.vision_query_entry.get().strip()
+        if not text_query:
+            dialog = ctk.CTkInputDialog(text="Enter the text query to search and click on:", title="OCR Click Text Query")
+            text_query = dialog.get_input()
+        if text_query:
+            # Convert region relative to anchor window if active
+            rel_x, rel_y = x, y
+            if self.recorded_target_hwnd:
+                rect = RECT()
+                if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
+                    rel_x = x - rect.left
+                    rel_y = y - rect.top
+                    
+            self.global_text_trigger_region = (rel_x, rel_y, w, h)
+            self.global_text_trigger_text = text_query
+            self.global_text_trigger_mode = "click"
+            self.text_trigger_switch_var.set("on")
+            self.toggle_text_trigger_view()
+            self.ocr_text_label.configure(
+                text=f"Trigger Text (CLICK): \"{text_query}\" in Region ({rel_x}, {rel_y}, {w}, {h})",
+                text_color=ACCENT_GREEN
+            )
+            self.vision_query_entry.delete(0, 'end')
+            self.vision_query_entry.insert(0, text_query)
+
+    def perform_ocr_on_file(self, path):
+        import asyncio
+        async def run():
+            from winsdk.windows.media.ocr import OcrEngine
+            from winsdk.windows.graphics.imaging import BitmapDecoder
+            from winsdk.windows.storage import StorageFile, FileAccessMode
+            try:
+                file = await StorageFile.get_file_from_path_async(path)
+                stream = await file.open_async(FileAccessMode.READ)
+                decoder = await BitmapDecoder.create_async(stream)
+                bitmap = await decoder.get_software_bitmap_async()
+                engine = OcrEngine.try_create_from_user_profile_languages()
+                if engine:
+                    res = await engine.recognize_async(bitmap)
+                    return res.text
+            except Exception as e:
+                print(f"OCR Error: {e}")
+            return ""
+        return asyncio.run(run())
+
+    def find_text_coordinates_in_file(self, path, query):
+        import asyncio
+        async def run():
+            from winsdk.windows.media.ocr import OcrEngine
+            from winsdk.windows.graphics.imaging import BitmapDecoder
+            from winsdk.windows.storage import StorageFile, FileAccessMode
+            try:
+                file = await StorageFile.get_file_from_path_async(path)
+                stream = await file.open_async(FileAccessMode.READ)
+                decoder = await BitmapDecoder.create_async(stream)
+                bitmap = await decoder.get_software_bitmap_async()
+                engine = OcrEngine.try_create_from_user_profile_languages()
+                if engine:
+                    res = await engine.recognize_async(bitmap)
+                    clean_query = "".join(c for c in query.lower() if c.isalnum())
+                    if not clean_query:
+                        return None
+                    for line in res.lines:
+                        words = list(line.words)
+                        n = len(words)
+                        best_slice = None
+                        for length in range(1, n + 1):
+                            for start in range(n - length + 1):
+                                end = start + length
+                                slice_text = " ".join([words[k].text for k in range(start, end)])
+                                clean_slice = "".join(c for c in slice_text.lower() if c.isalnum())
+                                if clean_query in clean_slice:
+                                    best_slice = words[start:end]
+                                    break
+                            if best_slice:
+                                break
+                        if best_slice:
+                            min_x = min(w.bounding_rect.x for w in best_slice)
+                            min_y = min(w.bounding_rect.y for w in best_slice)
+                            max_x = max(w.bounding_rect.x + w.bounding_rect.width for w in best_slice)
+                            max_y = max(w.bounding_rect.y + w.bounding_rect.height for w in best_slice)
+                            return (min_x + (max_x - min_x) / 2, min_y + (max_y - min_y) / 2)
+            except Exception as e:
+                print(f"OCR Coordinates Error: {e}")
+            return None
+        return asyncio.run(run())
+
+    def open_action_editor_modal(self, index):
+        if self.is_playing or self.is_recording: return
+        if index < len(self.macro_actions):
+            action = self.macro_actions[index]
+            ActionEditorModal(self, index, action, self.refresh_timeline_ui)
 
     def on_row_drag_start(self, event, index):
         self.dragged_index = index
@@ -506,21 +1224,23 @@ class MacroApp(ctk.CTk):
 
     def play_macro(self):
         mouse_ctl = mouse.Controller()
-        actions = [a for a in self.macro_actions if a.get('name','').upper() not in (self.selected_record_hotkey.upper(), self.selected_play_hotkey.upper())]
-        if not actions:
+        # Keep full actions list for direct 1-to-1 timeline index mapping
+        actions = list(self.macro_actions)
+        if not actions and self.img_trigger_switch_var.get() == "off" and self.text_trigger_switch_var.get() == "off":
             self.ui_queue.put("STOP_PLAYBACK")
             return
 
         current_loop_mode = self.loop_var.get()
-        max_loops = float('inf') if current_loop_mode == "Loop" else (int(self.count_entry.get()) if current_loop_mode == "Count" else 1)
+        max_loops = math.inf if current_loop_mode == "Loop" else (int(self.count_entry.get()) if current_loop_mode == "Count" else 1)
         loop_delay = max(0.0, float(self.loop_delay_entry.get())) if current_loop_mode in ("Loop", "Count") else 0.1
         
         loop_count = 0
-        self.hud_window = LiveHUD(stop_callback=self.toggle_playback)
+        self.hud_window = LiveHUD(self, "running", stop_callback=self.toggle_playback)
 
-        while self.is_playing and (max_loops == float('inf') or loop_count < max_loops):
-            self.hud_window.update_stats(loop_count)
+        while self.is_playing and (max_loops == math.inf or loop_count < max_loops):
+            self.after(0, lambda lc=loop_count: self.hud_window.set_loops(lc))
 
+            # 1. Global Image Trigger
             if self.img_trigger_switch_var.get() == "on" and self.global_trigger_image_path and os.path.exists(self.global_trigger_image_path):
                 global_matched = False
                 template = cv2.imread(self.global_trigger_image_path, cv2.IMREAD_UNCHANGED)
@@ -532,9 +1252,36 @@ class MacroApp(ctk.CTk):
                     else:
                         time.sleep(0.1)
 
-            for action in actions:
-                if not self.is_playing: break
+            # 2. Global Text Trigger
+            if self.text_trigger_switch_var.get() == "on" and self.global_text_trigger_text:
+                text_matched = False
+                while self.is_playing and not text_matched:
+                    matched, cx, cy = self.check_global_text_trigger_match()
+                    if matched:
+                        text_matched = True
+                        if self.global_text_trigger_mode == "click" and cx is not None and cy is not None:
+                            if self.fuzz_switch_var.get() == "on":
+                                cx += random.randint(-2, 2)
+                                cy += random.randint(-2, 2)
+                            if self.bezier_switch_var.get() == "on":
+                                sp = mouse_ctl.position
+                                human_mouse_move(mouse_ctl, sp[0], sp[1], cx, cy)
+                            else:
+                                mouse_ctl.position = (cx, cy)
+                            time.sleep(random.uniform(0.05, 0.1))
+                            mouse_ctl.click(mouse.Button.left)
+                    else:
+                        time.sleep(0.2)
 
+            i = 0
+            while i < len(actions) and self.is_playing:
+                action = actions[i]
+                
+                desc = self._action_text(i, action)
+                if "]" in desc:
+                    desc = desc.split("]", 1)[1].strip()
+                self.after(0, lambda d=desc: self.hud_window.set_active_action(d))
+                
                 remaining = action.get('delay', 0)
                 while remaining > 0 and self.is_playing:
                     sl = min(0.02, remaining); time.sleep(sl); remaining -= sl
@@ -549,20 +1296,152 @@ class MacroApp(ctk.CTk):
                                 base_x, base_y = rect.left, rect.top
                             break
 
+                next_i = i + 1
+
                 if action['type'] == 'image_match_wait':
                     template = cv2.imread(action['image_path'], cv2.IMREAD_UNCHANGED)
                     matched = False
-                    while self.is_playing and not matched:
+                    is_cond = action.get('is_conditional', False)
+                    
+                    if is_cond:
                         screen = cv2.cvtColor(np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
                         res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
-                        if cv2.minMaxLoc(res)[1] >= action.get('confidence', 0.85): matched = True
-                        else: time.sleep(0.1)
-                    continue
+                        if cv2.minMaxLoc(res)[1] >= action.get('confidence', 0.85):
+                            matched = True
+                    else:
+                        while self.is_playing and not matched:
+                            screen = cv2.cvtColor(np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
+                            res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+                            if cv2.minMaxLoc(res)[1] >= action.get('confidence', 0.85): matched = True
+                            else: time.sleep(0.1)
+                            
+                    if is_cond:
+                        goto_idx = action.get('goto_true') if matched else action.get('goto_false')
+                        if goto_idx is not None and 1 <= goto_idx <= len(actions):
+                            next_i = goto_idx - 1
+                            
+                    if matched and action.get('click_on_match', False):
+                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+                        h, w = template.shape[0], template.shape[1]
+                        tx = max_loc[0] + w // 2
+                        ty = max_loc[1] + h // 2
+                        if self.fuzz_switch_var.get() == "on":
+                            tx += random.randint(-2, 2)
+                            ty += random.randint(-2, 2)
+                        if self.bezier_switch_var.get() == "on":
+                            sp = mouse_ctl.position
+                            human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
+                        else:
+                            mouse_ctl.position = (tx, ty)
+                        time.sleep(random.uniform(0.005, 0.01))
+                        mouse_ctl.click(mouse.Button.left)
 
                 elif action['type'] == 'pixel_wait':
                     px, py = base_x + action['rel_x'], base_y + action['rel_y']
-                    while self.is_playing and get_screen_pixel_color(px, py) != action['color'].upper(): time.sleep(0.05)
-                    continue
+                    target_color = action['color'].upper()
+                    matched = False
+                    is_cond = action.get('is_conditional', False)
+                    
+                    if is_cond:
+                        if get_screen_pixel_color(px, py) == target_color:
+                            matched = True
+                    else:
+                        while self.is_playing and get_screen_pixel_color(px, py) != target_color:
+                            time.sleep(0.05)
+                        matched = True
+                        
+                    if is_cond:
+                        goto_idx = action.get('goto_true') if matched else action.get('goto_false')
+                        if goto_idx is not None and 1 <= goto_idx <= len(actions):
+                            next_i = goto_idx - 1
+
+                elif action['type'] == 'ocr_wait':
+                    rx, ry, rw, rh = action['region']
+                    tx = base_x + rx
+                    ty = base_y + ry
+                    text_query = action.get('text_query', '').strip().lower()
+                    matched = False
+                    is_cond = action.get('is_conditional', False)
+                    
+                    os.makedirs("./assets", exist_ok=True)
+                    temp_ocr_path = os.path.abspath("./assets/temp_ocr.png")
+                    
+                    if is_cond:
+                        shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                        shot.save(temp_ocr_path)
+                        recognized_text = self.perform_ocr_on_file(temp_ocr_path)
+                        if text_query in recognized_text.lower():
+                            matched = True
+                    else:
+                        while self.is_playing and not matched:
+                            shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                            shot.save(temp_ocr_path)
+                            recognized_text = self.perform_ocr_on_file(temp_ocr_path)
+                            if text_query in recognized_text.lower():
+                                matched = True
+                            else:
+                                time.sleep(0.2)
+                                
+                    if os.path.exists(temp_ocr_path):
+                        try: os.remove(temp_ocr_path)
+                        except: pass
+                        
+                    if is_cond:
+                        goto_idx = action.get('goto_true') if matched else action.get('goto_false')
+                        if goto_idx is not None and 1 <= goto_idx <= len(actions):
+                            next_i = goto_idx - 1
+
+                elif action['type'] == 'ocr_click':
+                    rx, ry, rw, rh = action['region']
+                    tx = base_x + rx
+                    ty = base_y + ry
+                    text_query = action.get('text_query', '').strip()
+                    matched = False
+                    is_cond = action.get('is_conditional', False)
+                    
+                    os.makedirs("./assets", exist_ok=True)
+                    temp_ocr_path = os.path.abspath("./assets/temp_ocr_click.png")
+                    click_coords = None
+                    
+                    if is_cond:
+                        shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                        shot.save(temp_ocr_path)
+                        click_coords = self.find_text_coordinates_in_file(temp_ocr_path, text_query)
+                        if click_coords is not None:
+                            matched = True
+                    else:
+                        while self.is_playing and not matched:
+                            shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                            shot.save(temp_ocr_path)
+                            click_coords = self.find_text_coordinates_in_file(temp_ocr_path, text_query)
+                            if click_coords is not None:
+                                matched = True
+                            else:
+                                time.sleep(0.2)
+                                
+                    if os.path.exists(temp_ocr_path):
+                        try: os.remove(temp_ocr_path)
+                        except: pass
+                        
+                    if matched and click_coords is not None:
+                        cx, cy = click_coords
+                        click_x = tx + int(cx)
+                        click_y = ty + int(cy)
+                        if self.fuzz_switch_var.get() == "on":
+                            click_x += random.randint(-2, 2)
+                            click_y += random.randint(-2, 2)
+                        if self.bezier_switch_var.get() == "on":
+                            sp = mouse_ctl.position
+                            human_mouse_move(mouse_ctl, sp[0], sp[1], click_x, click_y)
+                        else:
+                            mouse_ctl.position = (click_x, click_y)
+                        time.sleep(random.uniform(0.005, 0.01))
+                        mouse_ctl.click(mouse.Button.left)
+                        
+                    if is_cond:
+                        goto_idx = action.get('goto_true') if matched else action.get('goto_false')
+                        if goto_idx is not None and 1 <= goto_idx <= len(actions):
+                            next_i = goto_idx - 1
 
                 elif action['type'] == 'mouse':
                     tx, ty = base_x + action['rel_x'], base_y + action['rel_y']
@@ -575,7 +1454,20 @@ class MacroApp(ctk.CTk):
                     else:
                         mouse_ctl.position = (tx, ty)
                     time.sleep(random.uniform(0.005, 0.01))
-                    mouse_ctl.click(action['details'][2])
+                    
+                    btn_val = action['details'][2]
+                    if isinstance(btn_val, str):
+                        if 'left' in btn_val.lower():
+                            btn = mouse.Button.left
+                        elif 'right' in btn_val.lower():
+                            btn = mouse.Button.right
+                        elif 'middle' in btn_val.lower():
+                            btn = mouse.Button.middle
+                        else:
+                            btn = mouse.Button.left
+                    else:
+                        btn = btn_val
+                    mouse_ctl.click(btn)
 
                 elif action['type'] == 'keyboard':
                     vk, rel = action.get('vk'), action.get('is_release', False)
@@ -589,11 +1481,160 @@ class MacroApp(ctk.CTk):
                         else:
                             send_hardware_input(vk, is_release=rel)
 
-            loop_count += 1
-            if self.is_playing and (max_loops == float('inf') or loop_count < max_loops): time.sleep(loop_delay)
+                elif action['type'] == 'controller':
+                    pass 
 
-        self.hud_window.destroy()
+                i = next_i
+
+            loop_count += 1
+            if self.is_playing and (max_loops == math.inf or loop_count < max_loops): time.sleep(loop_delay)
+
         self.ui_queue.put("STOP_PLAYBACK")
+
+    def toggle_playback(self):
+        if self.is_recording or not self.macro_actions: return
+        if not self.is_playing:
+            self.is_playing = True
+            self.play_btn.configure(text="■ Stop Run", fg_color=ACCENT_RED)
+            self.status_label.configure(text="● PLAYBACK ACTIVE", text_color=ACCENT_GREEN)
+            threading.Thread(target=self.play_macro, daemon=True).start()
+        else:
+            self.is_playing = False
+
+    def stop_playback_ui_reset(self):
+        self.is_playing = False
+        self.play_btn.configure(text=f"▶ Run Sequence ({self.selected_play_hotkey})", fg_color=ACCENT_GREEN)
+        self.status_label.configure(text="● STABLE SYSTEM IDLE", text_color=TEXT_MUTED)
+        if hasattr(self, 'hud_window') and self.hud_window:
+            try:
+                self.hud_window.destroy()
+            except Exception:
+                pass
+            self.hud_window = None
+
+    def toggle_recording(self):
+        if self.is_playing: return
+        if not self.is_recording:
+            hwnd, exe = get_active_window_hwnd_and_exe()
+            if hwnd and exe not in ("python.exe", "pythonw.exe", "macro_app.exe"):
+                self.recorded_target_hwnd, self.recorded_target_exe = hwnd, exe
+                self.anchor_status_lbl.configure(text=f"Anchor Window: {exe}")
+            else:
+                self.recorded_target_hwnd = None
+                self.recorded_target_exe = "Unknown Window"
+                self.anchor_status_lbl.configure(text="Anchor Window: Independent")
+            
+            self.is_recording = True
+            self.record_btn.configure(text="■ Stop Capture", fg_color="#1e293b")
+            self.status_label.configure(text="● RECORDING ACTIVE", text_color=ACCENT_RED)
+            self.refresh_timeline_ui()
+            self.start_time = time.time()
+            self.record_hud = LiveHUD(self, "recording", stop_callback=self.toggle_recording)
+            self.mouse_listener, self.keyboard_listener = mouse.Listener(on_click=self.on_click), keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
+            self.mouse_listener.start()
+            self.keyboard_listener.start()
+        else:
+            self.is_recording = False
+            self.record_btn.configure(text=f"🔴 Capture Sequence ({self.selected_record_hotkey})", fg_color=ACCENT_RED)
+            self.status_label.configure(text="● STABLE SYSTEM IDLE", text_color=TEXT_MUTED)
+            self.mouse_listener.stop()
+            self.keyboard_listener.stop()
+            if hasattr(self, 'record_hud') and self.record_hud:
+                try:
+                    self.record_hud.destroy()
+                except Exception:
+                    pass
+                self.record_hud = None
+
+    def on_click(self, x, y, button, pressed):
+        if not self.is_recording:
+            return
+        if pressed:
+            # Avoid recording clicks that happen inside the macro app window
+            try:
+                ax, ay = self.winfo_rootx(), self.winfo_rooty()
+                aw, ah = self.winfo_width(), self.winfo_height()
+                if ax <= x <= ax + aw and ay <= y <= ay + ah:
+                    return
+            except Exception:
+                pass
+
+            # Calculate relative coordinates if anchor is set
+            rel_x, rel_y = x, y
+            if self.recorded_target_hwnd:
+                rect = RECT()
+                if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
+                    rel_x = x - rect.left
+                    rel_y = y - rect.top
+
+            d = time.time() - self.start_time
+            self.start_time = time.time()
+            
+            self.after(0, lambda: self.add_single_action_to_live_ui({
+                'type': 'mouse',
+                'rel_x': rel_x,
+                'rel_y': rel_y,
+                'details': (x, y, str(button)),
+                'delay': d
+            }))
+
+    def on_press(self, key):
+        if not self.is_recording:
+            return
+        vk, name = self._extract_key_info(key)
+        if vk is not None:
+            if name == self.selected_record_hotkey.upper() or name == self.selected_play_hotkey.upper():
+                return
+            d = time.time() - self.start_time
+            self.start_time = time.time()
+            self.after(0, lambda: self.add_single_action_to_live_ui({
+                'type': 'keyboard',
+                'vk': vk,
+                'name': name,
+                'is_release': False,
+                'delay': d
+            }))
+
+    def on_release(self, key):
+        if not self.is_recording:
+            return
+        vk, name = self._extract_key_info(key)
+        if vk is not None:
+            if name == self.selected_record_hotkey.upper() or name == self.selected_play_hotkey.upper():
+                return
+            d = time.time() - self.start_time
+            self.start_time = time.time()
+            self.after(0, lambda: self.add_single_action_to_live_ui({
+                'type': 'keyboard',
+                'vk': vk,
+                'name': name,
+                'is_release': True,
+                'delay': d
+            }))
+
+    def _extract_key_info(self, key):
+        vk = None
+        name = None
+        if hasattr(key, 'vk') and key.vk is not None:
+            vk = key.vk
+        elif hasattr(key, 'value') and hasattr(key.value, 'vk') and key.value.vk is not None:
+            vk = key.value.vk
+            
+        if hasattr(key, 'char') and key.char is not None:
+            name = key.char.upper()
+        elif hasattr(key, 'name') and key.name is not None:
+            name = key.name.upper()
+        elif hasattr(key, 'value') and hasattr(key.value, 'char') and key.value.char is not None:
+            name = key.value.char.upper()
+            
+        if not name and vk is not None:
+            for k in keyboard.Key:
+                if hasattr(k, 'value') and hasattr(k.value, 'vk') and k.value.vk == vk:
+                    name = k.name.upper()
+                    break
+            if not name:
+                name = f"VK_{vk}"
+        return vk, name
 
     def toggle_inline_action_listener(self):
         if self.is_playing or self.is_recording: return
@@ -620,7 +1661,7 @@ class MacroApp(ctk.CTk):
 
     def _on_inline_mouse_click(self, x, y, button, pressed):
         if pressed:
-            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'mouse','details':(x,y,button),'delay':1.0}))
+            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'mouse','details':(x,y,str(button)),'delay':1.0}))
             self.after(0, self.stop_inline_listener)
 
     def update_row_texts_only(self):
@@ -642,20 +1683,11 @@ class MacroApp(ctk.CTk):
         self.profiles_db[self.active_profile_name] = list(self.macro_actions)
         
         idx = len(self.macro_actions)-1
-        row = ctk.CTkFrame(self.timeline_scroll, fg_color="#141416", border_color=BORDER_COLOR, border_width=1, corner_radius=6, height=40)
+        row = ctk.CTkFrame(self.timeline_scroll, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=6, height=40)
         row.pack(fill="x", pady=3, padx=5)
         row.pack_propagate(False)
         
-        if action['type'] == 'image_match_wait' and 'image_path' in action and os.path.exists(action['image_path']):
-            try:
-                img = Image.open(action['image_path'])
-                img.thumbnail((24, 24))
-                ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(img.width, img.height))
-                img_lbl = ctk.CTkLabel(row, image=ctk_img, text="")
-                img_lbl.pack(side="left", padx=(8, 2))
-                img_lbl.image = ctk_img
-            except Exception:
-                pass
+        # No image preview loaded to keep timeline clean
 
         lbl = ctk.CTkButton(row, text=self._action_text(idx, action), anchor="w", fg_color="transparent", font=ctk.CTkFont(family="Consolas", size=11), corner_radius=0, command=lambda i=idx: self.select_timeline_item(i))
         lbl.pack(side="left", fill="both", expand=True)
@@ -663,17 +1695,26 @@ class MacroApp(ctk.CTk):
         lbl.bind("<ButtonPress-1>", lambda e, i=idx: self.on_row_drag_start(e, i), add="+")
         lbl.bind("<B1-Motion>", lambda e, i=idx: self.on_row_drag_motion(e, i))
         lbl.bind("<ButtonRelease-1>", lambda e, i=idx: self.on_row_drag_release(e, i))
+        lbl.bind("<Double-Button-1>", lambda e, i=idx: self.open_action_editor_modal(i))
+        row.bind("<Double-Button-1>", lambda e, i=idx: self.open_action_editor_modal(i))
 
         def_ = ctk.CTkFrame(row, fg_color="transparent")
         def_.pack(side="right", padx=4, fill="y")
         
-        ent = ctk.CTkEntry(def_, width=48, height=24, font=ctk.CTkFont(family="Consolas", size=11), fg_color="#0c0c0e", border_color=BORDER_COLOR)
+        ent = ctk.CTkEntry(def_, width=48, height=24, font=ctk.CTkFont(family="Consolas", size=11), fg_color=APP_BG, border_color=BORDER_COLOR)
         ent.insert(0, f"{action['delay']:.2f}")
         ent.pack(side="left", padx=2)
         ent.bind("<FocusOut>", lambda e, i=idx, en=ent: self.update_action_delay(i, en.get()))
         
         del_btn = ctk.CTkButton(def_, text="✕", width=22, height=24, fg_color="transparent", text_color=TEXT_MUTED, hover_color=ACCENT_RED, font=ctk.CTkFont(size=11, weight="bold"), command=lambda i=idx: self.delete_specific_action_node(i))
         del_btn.pack(side="right", padx=2)
+        
+        if hasattr(self, 'record_hud') and self.record_hud:
+            self.record_hud.set_captured_count(len(self.macro_actions))
+            desc = self._action_text(idx, action)
+            if "]" in desc:
+                desc = desc.split("]", 1)[1].strip()
+            self.record_hud.set_active_action(desc)
 
         self.action_ui_rows.append(row)
 
@@ -683,7 +1724,8 @@ class MacroApp(ctk.CTk):
             self.macro_actions.pop(target_index)
             self.profiles_db[self.active_profile_name] = list(self.macro_actions)
             
-            row_to_destroy = self.action_ui_rows.pop(target_index)
+            row_to_destroy = self.action_ui_rows[target_index]
+            self.action_ui_rows.pop(target_index)
             row_to_destroy.destroy()
             
             self.reindex_timeline_rows()
@@ -692,12 +1734,14 @@ class MacroApp(ctk.CTk):
     def reindex_timeline_rows(self):
         for idx, row in enumerate(self.action_ui_rows):
             action = self.macro_actions[idx]
+            row.bind("<Double-Button-1>", lambda e, i=idx: self.open_action_editor_modal(i))
             for child in row.winfo_children():
                 if isinstance(child, ctk.CTkButton):
                     child.configure(text=self._action_text(idx, action), command=lambda i=idx: self.select_timeline_item(i))
                     child.bind("<ButtonPress-1>", lambda e, i=idx: self.on_row_drag_start(e, i), add="+")
                     child.bind("<B1-Motion>", lambda e, i=idx: self.on_row_drag_motion(e, i))
                     child.bind("<ButtonRelease-1>", lambda e, i=idx: self.on_row_drag_release(e, i))
+                    child.bind("<Double-Button-1>", lambda e, i=idx: self.open_action_editor_modal(i))
                 elif isinstance(child, ctk.CTkFrame):
                     for sub_child in child.winfo_children():
                         if isinstance(sub_child, ctk.CTkEntry):
@@ -714,8 +1758,32 @@ class MacroApp(ctk.CTk):
     def select_timeline_item(self, index):
         if index < 0 or index >= len(self.macro_actions): return
         old = self.selected_action_index; self.selected_action_index = index
-        if old is not None and old < len(self.action_ui_rows): self.action_ui_rows[old].configure(fg_color="#141416")
-        if index < len(self.action_ui_rows): self.action_ui_rows[index].configure(fg_color="#1e293b")
+        if old is not None and old < len(self.action_ui_rows): self.action_ui_rows[old].configure(fg_color=PANEL_BG)
+        if index < len(self.action_ui_rows): self.action_ui_rows[index].configure(fg_color="#1e1b4b")
+        action = self.macro_actions[index]
+        if action['type'] in ('ocr_wait', 'ocr_click'):
+            query = action.get('text_query', '')
+            self.ocr_text_label.configure(text=f"Active OCR Text: \"{query}\"", text_color=ACCENT_PURPLE)
+            self.vision_query_entry.delete(0, 'end')
+            self.vision_query_entry.insert(0, query)
+        else:
+            self.ocr_text_label.configure(text="No text query active", text_color=TEXT_MUTED)
+
+    def update_ocr_text_label(self, event=None):
+        query = self.vision_query_entry.get().strip()
+        if query:
+            self.ocr_text_label.configure(text=f"Active OCR Text: \"{query}\"", text_color=ACCENT_PURPLE)
+        else:
+            self.ocr_text_label.configure(text="No text query active", text_color=TEXT_MUTED)
+
+    def toggle_exe_lock(self):
+        if self.exe_switch_var.get() == "on": self.exe_entry_frame.pack(fill="x", padx=4, pady=4); self.refresh_running_exes_list()
+        else: self.exe_entry_frame.pack_forget()
+
+    def refresh_running_exes_list(self):
+        lst = sorted(list(set([w[1] for w in get_all_visible_windows_info()])))
+        self.exe_name_entry.configure(values=lst)
+        if lst: self.exe_name_entry.set(lst[0])
 
     def change_loop_mode(self):
         for w in self.dynamic_loop_inputs.winfo_children(): w.destroy()
@@ -724,9 +1792,13 @@ class MacroApp(ctk.CTk):
             rf.pack(fill="x", pady=4)
             if self.loop_var.get() == "Count":
                 ctk.CTkLabel(rf, text="Limit:", font=ctk.CTkFont(size=12)).pack(side="left", padx=8)
-                self.count_entry = ctk.CTkEntry(rf, width=45, height=24); self.count_entry.insert(0, "5"); self.count_entry.pack(side="left", padx=4)
+                self.count_entry = ctk.CTkEntry(rf, width=45, height=24, fg_color=APP_BG, border_color=BORDER_COLOR)
+                self.count_entry.insert(0, "5")
+                self.count_entry.pack(side="left", padx=4)
             ctk.CTkLabel(rf, text="Pause:", font=ctk.CTkFont(size=12)).pack(side="left", padx=8)
-            self.loop_delay_entry = ctk.CTkEntry(rf, width=45, height=24); self.loop_delay_entry.insert(0, "0.1"); self.loop_delay_entry.pack(side="left", padx=4)
+            self.loop_delay_entry = ctk.CTkEntry(rf, width=45, height=24, fg_color=APP_BG, border_color=BORDER_COLOR)
+            self.loop_delay_entry.insert(0, "0.1")
+            self.loop_delay_entry.pack(side="left", padx=4)
 
     def check_ui_queue(self):
         try:
@@ -772,93 +1844,52 @@ class MacroApp(ctk.CTk):
         self.global_hotkey_listener = keyboard.Listener(on_press=on_press)
         self.global_hotkey_listener.start()
 
-    def toggle_recording(self):
-        if self.is_playing: return
-        if not self.is_recording:
-            hwnd, exe = get_active_window_hwnd_and_exe()
-            if hwnd: self.recorded_target_hwnd, self.recorded_target_exe = hwnd, exe; self.anchor_status_lbl.configure(text=f"Anchor Window: {exe}")
-            self.is_recording = True
-            self.macro_actions.clear(); self.refresh_timeline_ui()
-            self.start_time = time.time()
-            self.mouse_listener, self.keyboard_listener = mouse.Listener(on_click=self.on_click), keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
-            self.mouse_listener.start(); self.keyboard_listener.start()
+    def check_global_text_trigger_match(self):
+        # Determine region
+        if self.global_text_trigger_region:
+            rx, ry, rw, rh = self.global_text_trigger_region
+            # Adjust to anchor window if active
+            base_x, base_y = 0, 0
+            if self.recorded_target_exe and self.recorded_target_exe != "Unknown Window":
+                for win_info in get_all_visible_windows_info():
+                    if win_info[1] == self.recorded_target_exe:
+                        rect = RECT()
+                        if GetWindowRect(win_info[0], ctypes.byref(rect)):
+                            base_x, base_y = rect.left, rect.top
+                        break
+            tx = base_x + rx
+            ty = base_y + ry
+            shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
         else:
-            self.is_recording = False
-            self.mouse_listener.stop(); self.keyboard_listener.stop()
-
-    def on_click(self, x, y, button, pressed):
-        if pressed and self.is_recording:
-            d = time.time() - self.start_time; self.start_time = time.time()
-            rx, ry = x, y
-            if self.recorded_target_hwnd:
-                rect = RECT(); GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect))
-                rx, ry = x - rect.left, y - rect.top
-            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'mouse','rel_x':rx,'rel_y':ry,'details':(x,y,button),'delay':d}))
-
-    def _extract_key_info(self, key):
-        special_translation = {
-            keyboard.Key.space:     (0x20, "SPACE"),
-            keyboard.Key.enter:     (0x0D, "ENTER"),
-            keyboard.Key.shift:     (0xA0, "SHIFT"),    keyboard.Key.shift_l:  (0xA0, "SHIFT"),
-            keyboard.Key.shift_r:   (0xA1, "R_SHIFT"),
-            keyboard.Key.ctrl:      (0xA2, "CTRL"),     keyboard.Key.ctrl_l:   (0xA2, "CTRL"),
-            keyboard.Key.ctrl_r:    (0xA3, "R_CTRL"),
-            keyboard.Key.alt:       (0xA4, "ALT"),      keyboard.Key.alt_l:    (0xA4, "ALT"),
-            keyboard.Key.alt_r:     (0xA5, "R_ALT"),
-            keyboard.Key.tab:       (0x09, "TAB"),
-            keyboard.Key.backspace: (0x08, "BACKSPACE"),
-            keyboard.Key.delete:    (0x2E, "DELETE"),
-            keyboard.Key.esc:       (0x1B, "ESC"),
-            keyboard.Key.up:        (0x26, "UP"),       keyboard.Key.down:      (0x28, "DOWN"),
-            keyboard.Key.left:      (0x25, "LEFT"),     keyboard.Key.right:     (0x27, "RIGHT"),
-            keyboard.Key.home:      (0x24, "HOME"),     keyboard.Key.end:       (0x23, "END"),
-            keyboard.Key.page_up:   (0x21, "PAGE_UP"),  keyboard.Key.page_down: (0x22, "PAGE_DOWN"),
-            keyboard.Key.insert:    (0x2D, "INSERT"),   keyboard.Key.caps_lock: (0x14, "CAPS_LOCK"),
-            keyboard.Key.f1: (0x70,"F1"),  keyboard.Key.f2:  (0x71,"F2"),
-            keyboard.Key.f3: (0x72,"F3"),  keyboard.Key.f4:  (0x73,"F4"),
-            keyboard.Key.f5: (0x74,"F5"),  keyboard.Key.f6:  (0x75,"F6"),
-            keyboard.Key.f7: (0x76,"F7"),  keyboard.Key.f8:  (0x77,"F8"),
-            keyboard.Key.f9: (0x78,"F9"),  keyboard.Key.f10: (0x79,"F10"),
-            keyboard.Key.f11:(0x7A,"F11"), keyboard.Key.f12: (0x7B,"F12"),
-        }
-        if key in special_translation: 
-            return special_translation[key]
-        if hasattr(key, 'char') and key.char:
-            return ord(key.char.upper()), key.char.upper()
-        if hasattr(key, 'vk') and key.vk is not None:
-            return key.vk, SCAN_TO_NAME.get(VK_TO_SCAN.get(key.vk, 0), f"VK_{key.vk}")
-        return None, "UNKNOWN"
-
-    def on_press(self, key):
-        if self.is_recording:
-            vk, name = self._extract_key_info(key)
-            if not vk: return
-            if self.macro_actions and self.macro_actions[-1]['type'] == 'keyboard' and self.macro_actions[-1]['name'] == name and not self.macro_actions[-1]['is_release']:
-                self.macro_actions[-1]['repeat_count'] = self.macro_actions[-1].get('repeat_count', 1) + 1
-                self.update_row_texts_only()
-                return
-            self.currently_pressed_keys.add(name)
-            d = time.time() - self.start_time; self.start_time = time.time()
-            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':False,'repeat_count':1,'delay':d}))
-
-    def on_release(self, key):
-        if self.is_recording:
-            vk, name = self._extract_key_info(key)
-            if not vk: return
-            self.currently_pressed_keys.discard(name)
-            d = time.time() - self.start_time; self.start_time = time.time()
-            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':True,'delay':d}))
-
-    def toggle_playback(self):
-        if self.is_recording or not self.macro_actions: return
-        if not self.is_playing:
-            self.is_playing = True
-            threading.Thread(target=self.play_macro, daemon=True).start()
-        else: self.is_playing = False
-
-    def stop_playback_ui_reset(self):
-        self.is_playing = False
-        self.status_label.configure(text="● STABLE SYSTEM IDLE")
+            shot = pyautogui.screenshot()
+            tx, ty = 0, 0
+            
+        os.makedirs("./assets", exist_ok=True)
+        temp_ocr_path = os.path.abspath("./assets/temp_global_ocr.png")
+        shot.save(temp_ocr_path)
+        
+        matched = False
+        click_x, click_y = None, None
+        
+        try:
+            if self.global_text_trigger_mode == "click":
+                coords = self.find_text_coordinates_in_file(temp_ocr_path, self.global_text_trigger_text)
+                if coords is not None:
+                    matched = True
+                    click_x = tx + int(coords[0])
+                    click_y = ty + int(coords[1])
+            else:
+                recognized_text = self.perform_ocr_on_file(temp_ocr_path)
+                if self.global_text_trigger_text.strip().lower() in recognized_text.lower():
+                    matched = True
+        except Exception as e:
+            print(f"Global OCR Trigger error: {e}")
+            
+        if os.path.exists(temp_ocr_path):
+            try: os.remove(temp_ocr_path)
+            except: pass
+            
+        return matched, click_x, click_y
 
     def export_macro(self):
         fp = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Profile", "*.json")])
@@ -871,7 +1902,12 @@ class MacroApp(ctk.CTk):
             payload = {
                 'target': self.recorded_target_exe,
                 'embedded_trigger_image': image_base64_string,
-                'actions': self.macro_actions
+                'actions': self.macro_actions,
+                'global_text_trigger_enabled': (self.text_trigger_switch_var.get() == "on"),
+                'global_text_trigger_text': self.global_text_trigger_text,
+                'global_text_trigger_mode': self.global_text_trigger_mode,
+                'global_text_trigger_region': self.global_text_trigger_region,
+                'global_text_trigger_whole_screen': (self.ocr_whole_screen_var.get() == "on")
             }
             with open(fp, 'w') as f: 
                 json.dump(payload, f, indent=4)
@@ -900,6 +1936,7 @@ class MacroApp(ctk.CTk):
                     
                     self.img_trigger_switch_var.set("on")
                     self.toggle_image_trigger_view()
+                    self.trigger_image_label.configure(text="Trigger Image: global_trigger_active.png (Loaded)", text_color=ACCENT_GREEN)
                     self.render_center_panel_preview(reconstructed_path)
                     
                     for action in raw_actions:
@@ -908,19 +1945,48 @@ class MacroApp(ctk.CTk):
                 else:
                     self.remove_global_trigger_image()
 
+                self.global_text_trigger_text = data.get('global_text_trigger_text', '')
+                self.global_text_trigger_mode = data.get('global_text_trigger_mode', 'wait')
+                self.global_text_trigger_region = data.get('global_text_trigger_region', None)
+                
+                ws_val = "on" if data.get('global_text_trigger_whole_screen', True) else "off"
+                self.ocr_whole_screen_var.set(ws_val)
+                
+                enabled_text = data.get('global_text_trigger_enabled', False)
+                if enabled_text and self.global_text_trigger_text:
+                    self.text_trigger_switch_var.set("on")
+                    self.toggle_text_trigger_view()
+                    region_str = "Whole Screen" if not self.global_text_trigger_region else f"Region {self.global_text_trigger_region}"
+                    self.ocr_text_label.configure(
+                        text=f"Trigger Text ({self.global_text_trigger_mode.upper()}): \"{self.global_text_trigger_text}\" on {region_str}",
+                        text_color=ACCENT_GREEN
+                    )
+                else:
+                    self.text_trigger_switch_var.set("off")
+                    self.toggle_text_trigger_view()
+
                 self.macro_actions = raw_actions
                 self.refresh_timeline_ui()
             except Exception as error:
                 messagebox.showerror("Import Error", f"Failed to open macro file: {str(error)}")
 
     def _action_text(self, idx, action):
-        if action['type'] == 'mouse': return f" [{idx+1:02d}] Click ➔ [X:{action['rel_x']}, Y:{action['rel_y']}]"
-        if action['type'] == 'pixel_wait': return f" [{idx+1:02d}] Pixel Match ➔ {action['color']}"
-        if action['type'] == 'image_match_wait': return f" [{idx+1:02d}] Template Search ➔ {os.path.basename(action['image_path'])}"
+        if action['type'] == 'mouse': return f"🎯 [{idx+1:02d}] Click ➔ [X:{action['rel_x']}, Y:{action['rel_y']}]"
+        if action['type'] == 'pixel_wait': return f"🎨 [{idx+1:02d}] Pixel Match ➔ {action['color']}"
+        if action['type'] == 'image_match_wait': return f"📸 [{idx+1:02d}] Template Search ➔ {os.path.basename(action['image_path'])}"
+        if action['type'] == 'ocr_wait': return f"📝 [{idx+1:02d}] Wait for Text ➔ \"{action['text_query']}\""
+        if action['type'] == 'ocr_click': return f"🔍 [{idx+1:02d}] OCR Click ➔ \"{action['text_query']}\""
         
+        if action['type'] == 'controller':
+            if 'trigger' in action['action'] or 'stick' in action['action']:
+                return f"🎮 [{idx+1:02d}] Gamepad ➔ {action['action'].replace('_',' ').upper()}: [{action['name']}]"
+            if 'button' in action['action']:
+                return f"🎮 [{idx+1:02d}] Gamepad ➔ {action['action'].replace('_',' ').upper()}: [{action['index']}]"
+            return f"🎮 [{idx+1:02d}] Gamepad ➔ Directional: [{action['name']}]"
+
         repeats = action.get('repeat_count', 1)
         hold_suffix = f" (Held down x{repeats})" if (not action.get('is_release') and repeats > 1) else ""
-        return f" [{idx+1:02d}] Key { 'UP' if action.get('is_release') else 'DOWN' } ➔ [{action.get('name','?')}] {hold_suffix}"
+        return f"⌨️ [{idx+1:02d}] Key { 'UP' if action.get('is_release') else 'DOWN' } ➔ [{action.get('name','?')}] {hold_suffix}"
 
 
 if __name__ == "__main__":
