@@ -1,0 +1,8 @@
+customtkinter
+pynput
+pyautogui
+opencv-python
+numpy
+pillow
+winsdk
+pygame
