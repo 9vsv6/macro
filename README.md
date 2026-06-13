@@ -1,4 +1,4 @@
-# ⚡ Vision Macro Suite Pro
+# Macro by AI
 
 A premium, state-of-the-art Windows macro automation suite featuring advanced vision triggers, optical character recognition (OCR), humanized input execution, and a sleek glassmorphic HUD.
 
