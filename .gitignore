@@ -1,0 +1,26 @@
+# PyInstaller
+#  Clear out build/dist/specs
+build/
+dist/
+*.spec
+*.exe
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual Environment
+venv/
+.venv/
+env/
+.env
+
+# Local asset files
+assets/snippet_*.png
+assets/temp_*.png
+assets/global_trigger_*.png
