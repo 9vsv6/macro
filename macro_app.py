@@ -448,19 +448,37 @@ class ActionEditorModal(Toplevel):
         self.fields = {}
         
         if action['type'] == 'mouse':
+            # Checkbox: Record Mouse Coordinates (X/Y)
+            self.use_coords_var = ctk.StringVar(value="on" if action.get('use_coords', True) else "off")
+            
+            def toggle_coords_fields():
+                if self.use_coords_var.get() == "on":
+                    x_lbl.pack(anchor="w", pady=(5, 2))
+                    x_ent.pack(fill="x", pady=(0, 10))
+                    y_lbl.pack(anchor="w", pady=(5, 2))
+                    y_ent.pack(fill="x", pady=(0, 10))
+                else:
+                    x_lbl.pack_forget()
+                    x_ent.pack_forget()
+                    y_lbl.pack_forget()
+                    y_ent.pack_forget()
+            
+            coords_cb = ctk.CTkCheckBox(main_frame, text="Use exact X/Y coordinates", variable=self.use_coords_var, onvalue="on", offvalue="off", command=toggle_coords_fields)
+            coords_cb.pack(anchor="w", pady=5)
+            
             # X coord
-            ctk.CTkLabel(main_frame, text="Relative X:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            x_lbl = ctk.CTkLabel(main_frame, text="Relative X:", font=ctk.CTkFont(weight="bold"))
             x_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
-            x_ent.insert(0, str(action.get('rel_x', 0)))
-            x_ent.pack(fill="x", pady=(0, 10))
+            x_ent.insert(0, str(action.get('rel_x') if action.get('rel_x') is not None else 0))
             self.fields['rel_x'] = x_ent
             
             # Y coord
-            ctk.CTkLabel(main_frame, text="Relative Y:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            y_lbl = ctk.CTkLabel(main_frame, text="Relative Y:", font=ctk.CTkFont(weight="bold"))
             y_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
-            y_ent.insert(0, str(action.get('rel_y', 0)))
-            y_ent.pack(fill="x", pady=(0, 10))
+            y_ent.insert(0, str(action.get('rel_y') if action.get('rel_y') is not None else 0))
             self.fields['rel_y'] = y_ent
+            
+            toggle_coords_fields()
             
         elif action['type'] == 'keyboard':
             # VK code
@@ -654,6 +672,11 @@ class ActionEditorModal(Toplevel):
                 
         if hasattr(self, 'rel_var'):
             self.action['is_release'] = (self.rel_var.get() == "on")
+        if hasattr(self, 'use_coords_var'):
+            self.action['use_coords'] = (self.use_coords_var.get() == "on")
+            if not self.action['use_coords']:
+                self.action['rel_x'] = None
+                self.action['rel_y'] = None
         if hasattr(self, 'behavior_var'):
             behavior_map_rev = {
                 "Wait Only (Pause sequence)": "wait",
@@ -688,6 +711,7 @@ class MacroApp(ctk.CTk):
         self.bezier_switch_var = ctk.StringVar(value="on")
         self.fuzz_switch_var = ctk.StringVar(value="on")
         self.fast_click_switch_var = ctk.StringVar(value="off")
+        self.record_coords_switch_var = ctk.StringVar(value="off")
         
         self.global_trigger_image_path = None
         self.global_text_trigger_text = ""
@@ -939,6 +963,7 @@ class MacroApp(ctk.CTk):
         ctk.CTkSwitch(hbb, text="Enable Organic Bézier Curves", font=ctk.CTkFont(size=12), variable=self.bezier_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Randomize Target Jitter", font=ctk.CTkFont(size=12), variable=self.fuzz_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Instant Clicks (Non-Human Fast Click)", font=ctk.CTkFont(size=12), variable=self.fast_click_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
+        ctk.CTkSwitch(hbb, text="Record Mouse Coordinates (X/Y)", font=ctk.CTkFont(size=12), variable=self.record_coords_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
 
         # ── Tab 3: Shortcut Drivers & Controller ──
         # System Hotkeys bind box
@@ -1780,15 +1805,17 @@ class MacroApp(ctk.CTk):
                             next_i = goto_idx - 1
 
                 elif action['type'] == 'mouse':
-                    tx, ty = base_x + action['rel_x'], base_y + action['rel_y']
-                    if self.fuzz_switch_var.get() == "on":
-                        tx += random.randint(-2, 2)
-                        ty += random.randint(-2, 2)
-                    if self.bezier_switch_var.get() == "on":
-                        sp = mouse_ctl.position
-                        human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
-                    else:
-                        mouse_ctl.position = (tx, ty)
+                    use_coords = action.get('use_coords', True)
+                    if use_coords and action.get('rel_x') is not None:
+                        tx, ty = base_x + action['rel_x'], base_y + action['rel_y']
+                        if self.fuzz_switch_var.get() == "on":
+                            tx += random.randint(-2, 2)
+                            ty += random.randint(-2, 2)
+                        if self.bezier_switch_var.get() == "on":
+                            sp = mouse_ctl.position
+                            human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
+                        else:
+                            mouse_ctl.position = (tx, ty)
                     btn_val = action['details'][2]
                     btn_name = "left"
                     if isinstance(btn_val, str):
@@ -1896,13 +1923,17 @@ class MacroApp(ctk.CTk):
             except Exception:
                 pass
 
+            use_coords = (self.record_coords_switch_var.get() == "on")
+            
             # Calculate relative coordinates if anchor is set
-            rel_x, rel_y = x, y
-            if self.recorded_target_hwnd:
-                rect = RECT()
-                if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
-                    rel_x = x - rect.left
-                    rel_y = y - rect.top
+            rel_x, rel_y = None, None
+            if use_coords:
+                rel_x, rel_y = x, y
+                if self.recorded_target_hwnd:
+                    rect = RECT()
+                    if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
+                        rel_x = x - rect.left
+                        rel_y = y - rect.top
 
             d = time.time() - self.start_time
             self.start_time = time.time()
@@ -1911,6 +1942,7 @@ class MacroApp(ctk.CTk):
                 'type': 'mouse',
                 'rel_x': rel_x,
                 'rel_y': rel_y,
+                'use_coords': use_coords,
                 'details': (x, y, str(button)),
                 'delay': d
             }))
@@ -1983,16 +2015,20 @@ class MacroApp(ctk.CTk):
         self.deiconify()
         if action_type == 'mouse':
             x, y = data['x'], data['y']
-            rel_x, rel_y = x, y
-            if self.recorded_target_hwnd:
-                rect = RECT()
-                if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
-                    rel_x = x - rect.left
-                    rel_y = y - rect.top
+            use_coords = (self.record_coords_switch_var.get() == "on")
+            rel_x, rel_y = None, None
+            if use_coords:
+                rel_x, rel_y = x, y
+                if self.recorded_target_hwnd:
+                    rect = RECT()
+                    if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
+                        rel_x = x - rect.left
+                        rel_y = y - rect.top
             self.add_single_action_to_live_ui({
                 'type': 'mouse',
                 'rel_x': rel_x,
                 'rel_y': rel_y,
+                'use_coords': use_coords,
                 'details': (x, y, "Button.left"),
                 'delay': 1.0
             })
@@ -2320,7 +2356,12 @@ class MacroApp(ctk.CTk):
                 messagebox.showerror("Import Error", f"Failed to open macro file: {str(error)}")
 
     def _action_text(self, idx, action):
-        if action['type'] == 'mouse': return f"🎯 [{idx+1:02d}] Click ➔ [X:{action['rel_x']}, Y:{action['rel_y']}]"
+        if action['type'] == 'mouse':
+            use_coords = action.get('use_coords', True)
+            if use_coords and action.get('rel_x') is not None:
+                return f"🎯 [{idx+1:02d}] Click ➔ [X:{action['rel_x']}, Y:{action['rel_y']}]"
+            else:
+                return f"🎯 [{idx+1:02d}] Click ➔ [Current Position]"
         if action['type'] == 'pixel_wait': return f"🎨 [{idx+1:02d}] Pixel Match ➔ {action['color']}"
         if action['type'] == 'image_match_wait':
             kp = action.get('key_to_press')
