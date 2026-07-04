@@ -1067,6 +1067,19 @@ class MacroApp(ctk.CTk):
         self.et_container = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         self.et_container.pack(fill="x", pady=14, padx=16)
 
+        # Soft Fade-In Start Animation
+        self.attributes("-alpha", 0.0)
+        def run_fade():
+            alpha = 0.0
+            def step():
+                nonlocal alpha
+                if alpha < 1.0:
+                    alpha += 0.08
+                    self.attributes("-alpha", min(1.0, alpha))
+                    self.after(12, step)
+            step()
+        self.after(50, run_fade)
+
     def poll_controller_hardware_engine(self):
         while True:
             if not self.is_recording:
