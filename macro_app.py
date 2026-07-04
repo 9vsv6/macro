@@ -140,6 +140,59 @@ def send_hardware_mouse_click(button_name="left", is_release=False):
     command = Input(ctypes.c_ulong(0), ii_)
     SendInput(1, ctypes.pointer(command), ctypes.sizeof(command))
 
+def win32_screenshot(region=None):
+    from PIL import Image
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    
+    if region:
+        x, y, w, h = region
+    else:
+        x = 0
+        y = 0
+        w = user32.GetSystemMetrics(0)
+        h = user32.GetSystemMetrics(1)
+        
+    hScreenDC = user32.GetDC(0)
+    hMemDC = gdi32.CreateCompatibleDC(hScreenDC)
+    hBitmap = gdi32.CreateCompatibleBitmap(hScreenDC, w, h)
+    gdi32.SelectObject(hMemDC, hBitmap)
+    gdi32.BitBlt(hMemDC, 0, 0, w, h, hScreenDC, x, y, 0x00CC0020)
+    
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ('biSize', ctypes.c_ulong),
+            ('biWidth', ctypes.c_long),
+            ('biHeight', ctypes.c_long),
+            ('biPlanes', ctypes.c_ushort),
+            ('biBitCount', ctypes.c_ushort),
+            ('biCompression', ctypes.c_ulong),
+            ('biSizeImage', ctypes.c_ulong),
+            ('biXPelsPerMeter', ctypes.c_long),
+            ('biYPelsPerMeter', ctypes.c_long),
+            ('biClrUsed', ctypes.c_ulong),
+            ('biClrImportant', ctypes.c_ulong)
+        ]
+        
+    bmi = BITMAPINFOHEADER()
+    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.biWidth = w
+    bmi.biHeight = -h
+    bmi.biPlanes = 1
+    bmi.biBitCount = 32
+    bmi.biCompression = 0
+    bmi.biSizeImage = w * h * 4
+    
+    buffer = ctypes.create_string_buffer(bmi.biSizeImage)
+    gdi32.GetDIBits(hScreenDC, hBitmap, 0, h, buffer, ctypes.byref(bmi), 0)
+    
+    gdi32.DeleteObject(hBitmap)
+    gdi32.DeleteDC(hMemDC)
+    user32.ReleaseDC(0, hScreenDC)
+    
+    img = Image.frombuffer("RGBA", (w, h), buffer, "raw", "BGRA", 0, 1)
+    return img.convert("RGB")
+
 def get_vk_from_key_name(key_name):
     key_map = {
         "SPACE": 0x20, "ENTER": 0x0D, "ESC": 0x1B, "TAB": 0x09, "BACKSPACE": 0x08,
@@ -712,6 +765,7 @@ class MacroApp(ctk.CTk):
         self.fuzz_switch_var = ctk.StringVar(value="on")
         self.fast_click_switch_var = ctk.StringVar(value="off")
         self.record_coords_switch_var = ctk.StringVar(value="off")
+        self.turbo_scan_switch_var = ctk.StringVar(value="on")
         
         self.global_trigger_image_path = None
         self.global_text_trigger_text = ""
@@ -964,6 +1018,7 @@ class MacroApp(ctk.CTk):
         ctk.CTkSwitch(hbb, text="Randomize Target Jitter", font=ctk.CTkFont(size=12), variable=self.fuzz_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Instant Clicks (Non-Human Fast Click)", font=ctk.CTkFont(size=12), variable=self.fast_click_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Record Mouse Coordinates (X/Y)", font=ctk.CTkFont(size=12), variable=self.record_coords_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
+        ctk.CTkSwitch(hbb, text="Turbo Scan Mode (Super Fast Icons/Text)", font=ctk.CTkFont(size=12), variable=self.turbo_scan_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
 
         # ── Tab 3: Shortcut Drivers & Controller ──
         # System Hotkeys bind box
@@ -1544,6 +1599,20 @@ class MacroApp(ctk.CTk):
         loop_delay = max(0.0, float(self.loop_delay_entry.get())) if current_loop_mode in ("Loop", "Count") else 0.1
         
         loop_count = 0
+        is_turbo = (self.turbo_scan_switch_var.get() == "on")
+        if is_turbo:
+            get_screen = lambda reg=None: cv2.cvtColor(np.array(win32_screenshot(reg)), cv2.COLOR_RGB2BGR)
+            get_shot = lambda reg: win32_screenshot(reg)
+            img_sleep = 0.01
+            text_sleep = 0.05
+            pixel_sleep = 0.005
+        else:
+            get_screen = lambda reg=None: cv2.cvtColor(np.array(pyautogui.screenshot(region=reg) if reg else pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
+            get_shot = lambda reg: pyautogui.screenshot(region=reg)
+            img_sleep = 0.1
+            text_sleep = 0.2
+            pixel_sleep = 0.05
+
         self.hud_window = LiveHUD(self, "running", stop_callback=self.toggle_playback)
 
         while self.is_playing and (max_loops == math.inf or loop_count < max_loops):
@@ -1554,12 +1623,12 @@ class MacroApp(ctk.CTk):
                 global_matched = False
                 template = cv2.imread(self.global_trigger_image_path, cv2.IMREAD_COLOR)
                 while self.is_playing and not global_matched:
-                    screen = cv2.cvtColor(np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
+                    screen = get_screen()
                     res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
                     if cv2.minMaxLoc(res)[1] >= 0.85:
                         global_matched = True
                     else:
-                        time.sleep(0.1)
+                        time.sleep(img_sleep)
 
             # 2. Global Text Trigger
             if self.text_trigger_switch_var.get() == "on" and self.global_text_trigger_text:
@@ -1613,16 +1682,16 @@ class MacroApp(ctk.CTk):
                     is_cond = action.get('is_conditional', False)
                     
                     if is_cond:
-                        screen = cv2.cvtColor(np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
+                        screen = get_screen()
                         res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
                         if cv2.minMaxLoc(res)[1] >= action.get('confidence', 0.85):
                             matched = True
                     else:
                         while self.is_playing and not matched:
-                            screen = cv2.cvtColor(np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
+                            screen = get_screen()
                             res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
                             if cv2.minMaxLoc(res)[1] >= action.get('confidence', 0.85): matched = True
-                            else: time.sleep(0.1)
+                            else: time.sleep(img_sleep)
                             
                     if is_cond:
                         goto_idx = action.get('goto_true') if matched else action.get('goto_false')
@@ -1722,20 +1791,20 @@ class MacroApp(ctk.CTk):
                     temp_ocr_path = os.path.abspath("./assets/temp_ocr.png")
                     
                     if is_cond:
-                        shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                        shot = get_shot((tx, ty, rw, rh))
                         shot.save(temp_ocr_path)
                         recognized_text = self.perform_ocr_on_file(temp_ocr_path)
                         if text_query in recognized_text.lower():
                             matched = True
                     else:
                         while self.is_playing and not matched:
-                            shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                            shot = get_shot((tx, ty, rw, rh))
                             shot.save(temp_ocr_path)
                             recognized_text = self.perform_ocr_on_file(temp_ocr_path)
                             if text_query in recognized_text.lower():
                                 matched = True
                             else:
-                                time.sleep(0.2)
+                                time.sleep(text_sleep)
                                 
                     if os.path.exists(temp_ocr_path):
                         try: os.remove(temp_ocr_path)
@@ -1759,20 +1828,20 @@ class MacroApp(ctk.CTk):
                     click_coords = None
                     
                     if is_cond:
-                        shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                        shot = get_shot((tx, ty, rw, rh))
                         shot.save(temp_ocr_path)
                         click_coords = self.find_text_coordinates_in_file(temp_ocr_path, text_query)
                         if click_coords is not None:
                             matched = True
                     else:
                         while self.is_playing and not matched:
-                            shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                            shot = get_shot((tx, ty, rw, rh))
                             shot.save(temp_ocr_path)
                             click_coords = self.find_text_coordinates_in_file(temp_ocr_path, text_query)
                             if click_coords is not None:
                                 matched = True
                             else:
-                                time.sleep(0.2)
+                                time.sleep(text_sleep)
                                 
                     if os.path.exists(temp_ocr_path):
                         try: os.remove(temp_ocr_path)
@@ -2244,9 +2313,15 @@ class MacroApp(ctk.CTk):
                         break
             tx = base_x + rx
             ty = base_y + ry
-            shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+            if self.turbo_scan_switch_var.get() == "on":
+                shot = win32_screenshot((tx, ty, rw, rh))
+            else:
+                shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
         else:
-            shot = pyautogui.screenshot()
+            if self.turbo_scan_switch_var.get() == "on":
+                shot = win32_screenshot()
+            else:
+                shot = pyautogui.screenshot()
             tx, ty = 0, 0
             
         os.makedirs("./assets", exist_ok=True)
