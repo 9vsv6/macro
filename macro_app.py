@@ -687,6 +687,7 @@ class MacroApp(ctk.CTk):
         self.exe_switch_var = ctk.StringVar(value="off")
         self.bezier_switch_var = ctk.StringVar(value="on")
         self.fuzz_switch_var = ctk.StringVar(value="on")
+        self.fast_click_switch_var = ctk.StringVar(value="off")
         
         self.global_trigger_image_path = None
         self.global_text_trigger_text = ""
@@ -937,6 +938,7 @@ class MacroApp(ctk.CTk):
         hbb.pack(fill="x", padx=14, pady=8)
         ctk.CTkSwitch(hbb, text="Enable Organic Bézier Curves", font=ctk.CTkFont(size=12), variable=self.bezier_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Randomize Target Jitter", font=ctk.CTkFont(size=12), variable=self.fuzz_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
+        ctk.CTkSwitch(hbb, text="Instant Clicks (Non-Human Fast Click)", font=ctk.CTkFont(size=12), variable=self.fast_click_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
 
         # ── Tab 3: Shortcut Drivers & Controller ──
         # System Hotkeys bind box
@@ -1628,25 +1630,41 @@ class MacroApp(ctk.CTk):
                         elif behavior == "press_key":
                             kp = action.get('key_to_press')
                             if kp:
-                                time.sleep(random.uniform(0.08, 0.12))
                                 vk = get_vk_from_key_name(kp)
-                                if vk is not None:
-                                    send_hardware_input(vk, is_release=False)
-                                    time.sleep(random.uniform(0.04, 0.07))
-                                    send_hardware_input(vk, is_release=True)
+                                if self.fast_click_switch_var.get() == "on":
+                                    if vk is not None:
+                                        send_hardware_input(vk, is_release=False)
+                                        send_hardware_input(vk, is_release=True)
+                                    else:
+                                        try:
+                                            kb_ctl = keyboard.Controller()
+                                            kb_ctl.press(kp.lower())
+                                            kb_ctl.release(kp.lower())
+                                        except:
+                                            pass
                                 else:
-                                    try:
-                                        kb_ctl = keyboard.Controller()
-                                        kb_ctl.press(kp.lower())
+                                    time.sleep(random.uniform(0.08, 0.12))
+                                    if vk is not None:
+                                        send_hardware_input(vk, is_release=False)
                                         time.sleep(random.uniform(0.04, 0.07))
-                                        kb_ctl.release(kp.lower())
-                                    except Exception as e:
-                                        print("Keyboard controller fallback error:", e)
+                                        send_hardware_input(vk, is_release=True)
+                                    else:
+                                        try:
+                                            kb_ctl = keyboard.Controller()
+                                            kb_ctl.press(kp.lower())
+                                            time.sleep(random.uniform(0.04, 0.07))
+                                            kb_ctl.release(kp.lower())
+                                        except Exception as e:
+                                            print("Keyboard controller fallback error:", e)
                         elif behavior == "click":
-                            time.sleep(random.uniform(0.08, 0.12))
-                            send_hardware_mouse_click("left", is_release=False)
-                            time.sleep(random.uniform(0.04, 0.07))
-                            send_hardware_mouse_click("left", is_release=True)
+                            if self.fast_click_switch_var.get() == "on":
+                                send_hardware_mouse_click("left", is_release=False)
+                                send_hardware_mouse_click("left", is_release=True)
+                            else:
+                                time.sleep(random.uniform(0.08, 0.12))
+                                send_hardware_mouse_click("left", is_release=False)
+                                time.sleep(random.uniform(0.04, 0.07))
+                                send_hardware_mouse_click("left", is_release=True)
 
                 elif action['type'] == 'pixel_wait':
                     px, py = base_x + action['rel_x'], base_y + action['rel_y']
@@ -1747,10 +1765,14 @@ class MacroApp(ctk.CTk):
                             human_mouse_move(mouse_ctl, sp[0], sp[1], click_x, click_y)
                         else:
                             mouse_ctl.position = (click_x, click_y)
-                        time.sleep(random.uniform(0.08, 0.12))
-                        send_hardware_mouse_click("left", is_release=False)
-                        time.sleep(random.uniform(0.04, 0.07))
-                        send_hardware_mouse_click("left", is_release=True)
+                        if self.fast_click_switch_var.get() == "on":
+                            send_hardware_mouse_click("left", is_release=False)
+                            send_hardware_mouse_click("left", is_release=True)
+                        else:
+                            time.sleep(random.uniform(0.08, 0.12))
+                            send_hardware_mouse_click("left", is_release=False)
+                            time.sleep(random.uniform(0.04, 0.07))
+                            send_hardware_mouse_click("left", is_release=True)
                         
                     if is_cond:
                         goto_idx = action.get('goto_true') if matched else action.get('goto_false')
@@ -1775,10 +1797,14 @@ class MacroApp(ctk.CTk):
                         elif 'middle' in btn_val.lower():
                             btn_name = "middle"
                     
-                    time.sleep(random.uniform(0.08, 0.12))
-                    send_hardware_mouse_click(btn_name, is_release=False)
-                    time.sleep(random.uniform(0.04, 0.07))
-                    send_hardware_mouse_click(btn_name, is_release=True)
+                    if self.fast_click_switch_var.get() == "on":
+                        send_hardware_mouse_click(btn_name, is_release=False)
+                        send_hardware_mouse_click(btn_name, is_release=True)
+                    else:
+                        time.sleep(random.uniform(0.08, 0.12))
+                        send_hardware_mouse_click(btn_name, is_release=False)
+                        time.sleep(random.uniform(0.04, 0.07))
+                        send_hardware_mouse_click(btn_name, is_release=True)
 
                 elif action['type'] == 'keyboard':
                     vk, rel = action.get('vk'), action.get('is_release', False)
