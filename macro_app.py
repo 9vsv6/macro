@@ -21,16 +21,16 @@ except ImportError:
     HAS_PYGAME = False
 
 # Enhanced Premium Color Palette
-APP_BG = "#030712"          
-PANEL_BG = "#0b0f19"        
-HEADER_BG = "#0f172a"       
-BORDER_COLOR = "#1e293b"     
-ACCENT_BLUE = "#60a5fa"     
-ACCENT_GREEN = "#34d399"    
-ACCENT_RED = "#f87171"      
-ACCENT_PURPLE = "#a78bfa"   
-TEXT_MAIN = "#f8fafc"       
-TEXT_MUTED = "#94a3b8"      
+APP_BG = "#1e1f22"          
+PANEL_BG = "#2b2d31"        
+HEADER_BG = "#1e1f22"       
+BORDER_COLOR = "#3f424a"     
+ACCENT_BLUE = "#5865f2"     
+ACCENT_GREEN = "#23a55a"    
+ACCENT_RED = "#da373c"      
+ACCENT_PURPLE = "#9b5de5"   
+TEXT_MAIN = "#f2f3f5"       
+TEXT_MUTED = "#949ba4"      
 
 ctk.set_appearance_mode("Dark")
 
@@ -823,11 +823,11 @@ class MacroApp(ctk.CTk):
         self.add_manual_btn = ctk.CTkButton(
             self.et_container, 
             text="➕ Add Action", 
-            fg_color="#2b2d31", 
-            hover_color="#3d4047", 
-            text_color=TEXT_MAIN,
+            fg_color=ACCENT_BLUE, 
+            hover_color="#4752c4", 
+            text_color="#ffffff",
             font=ctk.CTkFont(size=11, weight="bold"), 
-            height=26, 
+            height=28, 
             width=150, 
             command=self.trigger_manual_action_choice_flow
         )
@@ -1283,15 +1283,32 @@ class MacroApp(ctk.CTk):
         self.refresh_profile_catalog_ui()
         self.refresh_timeline_ui()
 
+    def delete_profile_entry(self, name):
+        if name == "Default Profile":
+            return
+        if name in self.profiles_db:
+            del self.profiles_db[name]
+        
+        if self.active_profile_name == name:
+            self.active_profile_name = "Default Profile"
+            self.macro_actions = list(self.profiles_db.get("Default Profile", []))
+            
+        self.refresh_profile_catalog_ui()
+        self.refresh_timeline_ui()
+
     def refresh_profile_catalog_ui(self):
         for widget in self.header_profile_container.winfo_children(): widget.destroy()
         if not self.profiles_db: self.profiles_db["Default Profile"] = []
-        for p_name in self.profiles_db.keys():
+        for p_name in list(self.profiles_db.keys()):
             is_active = (p_name == self.active_profile_name)
-            bg = "#8b5cf6" if is_active else "#2b2d31"
+            bg = ACCENT_PURPLE if is_active else "#2b2d31"
             hover = "#7c3aed" if is_active else "#3d4047"
+            
+            p_frame = ctk.CTkFrame(self.header_profile_container, fg_color="transparent")
+            p_frame.pack(side="left", padx=4)
+            
             btn = ctk.CTkButton(
-                self.header_profile_container, 
+                p_frame, 
                 text=p_name, 
                 font=ctk.CTkFont(size=11, weight="bold" if is_active else "normal"), 
                 fg_color=bg, 
@@ -1301,7 +1318,34 @@ class MacroApp(ctk.CTk):
                 height=26, 
                 command=lambda name=p_name: self.select_profile_catalog_node(name)
             )
-            btn.pack(side="left", padx=4)
+            btn.pack(side="left")
+            
+            del_btn = ctk.CTkButton(
+                p_frame,
+                text="✕",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="transparent",
+                hover_color=ACCENT_RED,
+                text_color=ACCENT_RED,
+                width=16,
+                height=22,
+                corner_radius=4,
+                command=lambda name=p_name: self.delete_profile_entry(name)
+            )
+            
+            # Hover detection
+            def make_hover_handlers(d_btn, name_val):
+                return lambda e: d_btn.pack(side="left", padx=(2, 0)) if name_val != "Default Profile" else None, \
+                       lambda e: d_btn.pack_forget()
+            
+            on_enter, on_leave = make_hover_handlers(del_btn, p_name)
+            
+            btn.bind("<Enter>", on_enter)
+            btn.bind("<Leave>", on_leave)
+            p_frame.bind("<Enter>", on_enter)
+            p_frame.bind("<Leave>", on_leave)
+            del_btn.bind("<Enter>", on_enter)
+            del_btn.bind("<Leave>", on_leave)
 
         self.create_profile_btn = ctk.CTkButton(
             self.header_profile_container,
