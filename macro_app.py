@@ -186,7 +186,7 @@ class CTKTooltip:
         if tw:
             tw.destroy()
 
-class ClickPointPicker(Toplevel):
+class AddActionOverlay(Toplevel):
     def __init__(self, parent, callback):
         super().__init__(parent)
         self.parent = parent
@@ -195,8 +195,20 @@ class ClickPointPicker(Toplevel):
         self.config(cursor="cross")
         self.canvas = Canvas(self, cursor="cross", bg="black", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
+        
+        # Display instructions in the center of the screen
+        self.canvas.create_text(
+            self.winfo_screenwidth() // 2,
+            self.winfo_screenheight() // 2,
+            text="ADD MANUAL ACTION OVERLAY\n\n• Click anywhere to record a mouse click\n• Press any keyboard key to record keypress\n• Press ESC to cancel",
+            font=("Segoe UI", 16, "bold"),
+            fill="#a1a1aa",
+            justify="center"
+        )
+        
         self.canvas.bind("<ButtonPress-1>", self.on_click)
-        self.bind("<Escape>", self.on_escape)
+        self.bind("<KeyPress>", self.on_key_press)
+        self.focus_force()
 
     def on_click(self, e):
         x, y = e.x, e.y
@@ -204,64 +216,95 @@ class ClickPointPicker(Toplevel):
         self.update()
         time.sleep(0.15)
         self.destroy()
-        self.callback(x, y)
+        self.callback('mouse', {'x': x, 'y': y})
 
-    def on_escape(self, event=None):
+    def on_key_press(self, e):
+        vk = e.keycode
+        keysym = e.keysym.upper()
+        
+        if keysym == "ESCAPE":
+            self.destroy()
+            if self.parent:
+                self.parent.deiconify()
+            return
+            
+        sym_map = {
+            "RETURN": "ENTER",
+            "SPACE": "SPACE",
+            "ESCAPE": "ESC",
+            "TAB": "TAB",
+            "BACKSPACE": "BACKSPACE"
+        }
+        name = sym_map.get(keysym, keysym)
+        
+        self.withdraw()
+        self.update()
+        time.sleep(0.15)
         self.destroy()
-        if self.parent:
-            self.parent.deiconify()
+        self.callback('keyboard', {'vk': vk, 'name': name})
 
-class AddActionChoiceModal(Toplevel):
+class IconActionChoiceModal(Toplevel):
     def __init__(self, parent, on_select):
         super().__init__(parent)
         self.parent = parent
         self.on_select = on_select
-        self.title("Add Manual Action")
-        self.geometry("300x130")
+        self.title("Action on Match")
+        self.geometry("380x150")
         self.resizable(False, False)
         self.configure(bg="#09090b")
         self.attributes("-topmost", True)
         self.transient(parent)
         self.grab_set()
         
-        # Center the modal relative to parent
         self.update_idletasks()
-        px = parent.winfo_x() + (parent.winfo_width() // 2) - 150
-        py = parent.winfo_y() + (parent.winfo_height() // 2) - 65
+        px = parent.winfo_x() + (parent.winfo_width() // 2) - 190
+        py = parent.winfo_y() + (parent.winfo_height() // 2) - 75
         self.geometry(f"+{px}+{py}")
         
         frame = ctk.CTkFrame(self, fg_color="#09090b")
         frame.pack(fill="both", expand=True, padx=15, pady=15)
         
-        lbl = ctk.CTkLabel(frame, text="Select action type to add:", font=ctk.CTkFont(size=12, weight="bold"), text_color="#f4f4f5")
+        lbl = ctk.CTkLabel(frame, text="Select behavior when icon is matched on screen:", font=ctk.CTkFont(size=12, weight="bold"), text_color="#f4f4f5")
         lbl.pack(pady=(0, 15))
         
         btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
         btn_frame.pack(fill="x")
         
-        key_btn = ctk.CTkButton(
-            btn_frame, 
-            text="⌨️ Keyboard Key", 
-            fg_color="#2b2d31", 
-            hover_color="#3d4047", 
-            text_color="#f4f4f5",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            width=120,
-            command=lambda: self.select('keyboard')
-        )
-        key_btn.pack(side="left", padx=5, expand=True)
-        
         click_btn = ctk.CTkButton(
             btn_frame, 
-            text="🖱️ Mouse Click", 
+            text="🖱️ Left Click", 
             fg_color="#2b2d31", 
             hover_color="#3d4047", 
             text_color="#f4f4f5",
             font=ctk.CTkFont(size=11, weight="bold"),
-            width=120,
-            command=lambda: self.select('mouse')
+            width=100,
+            command=lambda: self.select('click')
         )
-        click_btn.pack(side="right", padx=5, expand=True)
+        click_btn.pack(side="left", padx=3, expand=True)
+        
+        hover_btn = ctk.CTkButton(
+            btn_frame, 
+            text="👁️ Hover Only", 
+            fg_color="#2b2d31", 
+            hover_color="#3d4047", 
+            text_color="#f4f4f5",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            width=100,
+            command=lambda: self.select('hover')
+        )
+        hover_btn.pack(side="left", padx=3, expand=True)
+        
+        key_btn = ctk.CTkButton(
+            btn_frame, 
+            text="⌨️ Press Key", 
+            fg_color="#2b2d31", 
+            hover_color="#3d4047", 
+            text_color="#f4f4f5",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            width=100,
+            command=lambda: self.select('press_key')
+        )
+        key_btn.pack(side="left", padx=3, expand=True)
         
     def select(self, choice):
         self.destroy()
@@ -1196,34 +1239,43 @@ class MacroApp(ctk.CTk):
         
         click_val = getattr(self, 'last_snipe_click_default', False)
         
-        key_to_press = None
-        match_behavior = "wait"
-        
         if click_val:
-            dialog = ctk.CTkInputDialog(
-                text="Choose match action:\n• Type 'hover' to just move mouse to icon (no click)\n• Type a key (e.g. E, Space) to press a key\n• Leave empty to left click the mouse",
-                title="Action on Match"
-            )
-            input_val = dialog.get_input()
-            if input_val is not None:
-                val = input_val.strip().lower()
-                if val == "hover" or val == "h":
-                    match_behavior = "hover"
-                elif val:
-                    match_behavior = "press_key"
-                    key_to_press = val.upper()
-                else:
-                    match_behavior = "click"
-        
-        self.add_single_action_to_live_ui({
-            'type': 'image_match_wait',
-            'image_path': asset_path,
-            'confidence': 0.85,
-            'click_on_match': click_val or (match_behavior != "wait"),
-            'match_behavior': match_behavior,
-            'key_to_press': key_to_press,
-            'delay': 0.5
-        })
+            def on_behavior_selected(choice):
+                key_to_press = None
+                match_behavior = choice
+                
+                if choice == 'press_key':
+                    dialog = ctk.CTkInputDialog(
+                        text="Enter the keyboard key to press on match (e.g. E, Space):",
+                        title="Key Press on Match"
+                    )
+                    input_key = dialog.get_input()
+                    if input_key and input_key.strip():
+                        key_to_press = input_key.strip().upper()
+                    else:
+                        match_behavior = "click"
+                        
+                self.add_single_action_to_live_ui({
+                    'type': 'image_match_wait',
+                    'image_path': asset_path,
+                    'confidence': 0.85,
+                    'click_on_match': True,
+                    'match_behavior': match_behavior,
+                    'key_to_press': key_to_press,
+                    'delay': 0.5
+                })
+            
+            IconActionChoiceModal(self, on_behavior_selected)
+        else:
+            self.add_single_action_to_live_ui({
+                'type': 'image_match_wait',
+                'image_path': asset_path,
+                'confidence': 0.85,
+                'click_on_match': False,
+                'match_behavior': 'wait',
+                'key_to_press': None,
+                'delay': 0.5
+            })
 
     def trigger_ocr_wait_flow(self):
         if self.is_playing or self.is_recording: return
@@ -1897,62 +1949,31 @@ class MacroApp(ctk.CTk):
 
     def trigger_manual_action_choice_flow(self):
         if self.is_playing or self.is_recording: return
-        if not self.listening_for_manual_action:
-            self.listening_for_manual_action = True
-            self.add_manual_btn.configure(text="Listening...", fg_color=ACCENT_RED)
-            
-            # Start both mouse and keyboard listeners
-            self.manual_keyboard_listener = keyboard.Listener(on_press=self._on_inline_key_press)
-            self.manual_mouse_listener = mouse.Listener(on_click=self._on_inline_mouse_click)
-            self.manual_keyboard_listener.start()
-            self.manual_mouse_listener.start()
-        else:
-            self.stop_inline_listener()
+        self.withdraw()
+        time.sleep(0.2)
+        AddActionOverlay(self, self.handle_manual_overlay_callback)
 
-    def stop_inline_listener(self):
-        self.listening_for_manual_action = False
-        self.add_manual_btn.configure(text="➕ Add Action", fg_color="#2b2d31")
-        if hasattr(self, 'manual_keyboard_listener'):
-            try: self.manual_keyboard_listener.stop()
-            except: pass
-        if hasattr(self, 'manual_mouse_listener'):
-            try: self.manual_mouse_listener.stop()
-            except: pass
-
-    def _on_inline_key_press(self, key):
-        vk, name = self._extract_key_info(key)
-        if vk:
-            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':False,'delay':1.0}))
-            self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':True,'delay':0.05}))
-        self.after(0, self.stop_inline_listener)
-
-    def _on_inline_mouse_click(self, x, y, button, pressed):
-        if pressed:
-            # Avoid recording clicks that happen inside the macro app window
-            try:
-                ax, ay = self.winfo_rootx(), self.winfo_rooty()
-                aw, ah = self.winfo_width(), self.winfo_height()
-                if ax <= x <= ax + aw and ay <= y <= ay + ah:
-                    return
-            except Exception:
-                pass
-                
-            # Calculate relative coordinates if anchor is set
+    def handle_manual_overlay_callback(self, action_type, data):
+        self.deiconify()
+        if action_type == 'mouse':
+            x, y = data['x'], data['y']
             rel_x, rel_y = x, y
             if self.recorded_target_hwnd:
                 rect = RECT()
                 if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
                     rel_x = x - rect.left
                     rel_y = y - rect.top
-                    
-            self.after(0, lambda: self.add_single_action_to_live_ui({
+            self.add_single_action_to_live_ui({
                 'type': 'mouse',
                 'rel_x': rel_x,
                 'rel_y': rel_y,
-                'details': (x, y, str(button)),
+                'details': (x, y, "Button.left"),
                 'delay': 1.0
-            }))
-            self.after(0, self.stop_inline_listener)
+            })
+        elif action_type == 'keyboard':
+            vk, name = data['vk'], data['name']
+            self.add_single_action_to_live_ui({'type': 'keyboard', 'vk': vk, 'name': name, 'is_release': False, 'delay': 1.0})
+            self.add_single_action_to_live_ui({'type': 'keyboard', 'vk': vk, 'name': name, 'is_release': True, 'delay': 0.05})
 
     def update_row_texts_only(self):
         for idx, action in enumerate(self.macro_actions):
