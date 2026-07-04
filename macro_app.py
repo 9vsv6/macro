@@ -533,17 +533,18 @@ class MacroApp(ctk.CTk):
         self.play_hk_btn = ctk.CTkButton(self.hk_body, text=self.selected_play_hotkey, width=120, height=26, fg_color="#222226", hover_color="#2d2d34", command=lambda: self.start_listening_for_hotkey('play'))
         self.play_hk_btn.grid(row=1, column=1, padx=2, pady=5, sticky="e")
 
-        self.et_container.grid_columnconfigure(0, weight=1)
-        self.et_container.grid_columnconfigure(1, weight=1)
-
-        self.add_manual_btn = ctk.CTkButton(self.et_container, text="➕ Add Keyboard Key", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=11, weight="bold"), height=34, command=self.toggle_inline_action_listener)
-        self.add_manual_btn.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6), padx=2)
-
-        self.snipe_click_icon_btn = ctk.CTkButton(self.et_container, text="🎯 Snipe & Click Icon", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=11, weight="bold"), height=34, command=lambda: self.trigger_screen_sniper_flow(click_on_match=True))
-        self.snipe_click_icon_btn.grid(row=1, column=0, sticky="ew", padx=2)
-
-        self.snipe_wait_icon_btn = ctk.CTkButton(self.et_container, text="👁️ Snipe & Wait Icon", fg_color=ACCENT_GREEN, hover_color="#059669", font=ctk.CTkFont(size=11, weight="bold"), height=34, command=lambda: self.trigger_screen_sniper_flow(click_on_match=False))
-        self.snipe_wait_icon_btn.grid(row=1, column=1, sticky="ew", padx=2)
+        self.add_manual_btn = ctk.CTkButton(
+            self.et_container, 
+            text="➕ Add Keyboard Key", 
+            fg_color="#2b2d31", 
+            hover_color="#3d4047", 
+            text_color=TEXT_MAIN,
+            font=ctk.CTkFont(size=11, weight="bold"), 
+            height=26, 
+            width=150, 
+            command=self.toggle_inline_action_listener
+        )
+        self.add_manual_btn.pack(side="right", padx=2, pady=2)
 
         self.toggle_image_trigger_view()
         self.toggle_text_trigger_view()
@@ -658,6 +659,21 @@ class MacroApp(ctk.CTk):
         self.btn_container = ctk.CTkFrame(img_trigger_card, fg_color="transparent")
         self.trigger_image_label = ctk.CTkLabel(img_trigger_card, text="No trigger image selected", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MUTED)
         self.center_preview_label = ctk.CTkLabel(img_trigger_card, text="")
+
+        # ── Action Desk Icon Detection Actions Creator Card ──
+        icon_actions_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
+        icon_actions_card.pack(fill="x", pady=6, padx=8)
+        
+        ctk.CTkLabel(icon_actions_card, text="📸 SCREEN ICON DETECTION ACTIONS", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=12, pady=(10, 4))
+        
+        icon_btn_frame = ctk.CTkFrame(icon_actions_card, fg_color="transparent")
+        icon_btn_frame.pack(fill="x", padx=12, pady=(2, 10))
+        
+        self.snipe_click_icon_btn = ctk.CTkButton(icon_btn_frame, text="🎯 Snipe & Click Icon", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=lambda: self.trigger_screen_sniper_flow(click_on_match=True))
+        self.snipe_click_icon_btn.pack(side="left", fill="x", expand=True, padx=2)
+        
+        self.snipe_wait_icon_btn = ctk.CTkButton(icon_btn_frame, text="👁️ Snipe & Wait Icon", fg_color=ACCENT_GREEN, hover_color="#059669", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=lambda: self.trigger_screen_sniper_flow(click_on_match=False))
+        self.snipe_wait_icon_btn.pack(side="left", fill="x", expand=True, padx=2)
 
         # ── Action Desk Vision Actions Creator Card ──
         vision_actions_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
