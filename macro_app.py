@@ -352,18 +352,56 @@ class ActionEditorModal(Toplevel):
             conf_ent.pack(fill="x", pady=(0, 10))
             self.fields['confidence'] = conf_ent
             
-            # Click matched checkbox
-            self.click_var = ctk.StringVar(value="on" if action.get('click_on_match', False) else "off")
-            click_cb = ctk.CTkCheckBox(main_frame, text="Click matched target center", variable=self.click_var, onvalue="on", offvalue="off")
-            click_cb.pack(anchor="w", pady=5)
-
-            # Key to press
-            ctk.CTkLabel(main_frame, text="Keyboard Key to Press (Optional):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
-            key_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24", placeholder_text="e.g. E, Space, Enter (leave blank to click mouse)")
+            # Match Behavior Dropdown
+            ctk.CTkLabel(main_frame, text="Action on Match:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            
+            behavior_map = {
+                "wait": "Wait Only (Pause sequence)",
+                "hover": "Hover Only (Move cursor to icon)",
+                "click": "Click Mouse (Left Click center)",
+                "press_key": "Press Key (Execute keystroke)"
+            }
+            
+            current_behavior = action.get('match_behavior')
+            if not current_behavior:
+                if action.get('click_on_match', False):
+                    current_behavior = "press_key" if action.get('key_to_press') else "click"
+                else:
+                    current_behavior = "wait"
+            
+            self.behavior_var = ctk.StringVar(value=behavior_map.get(current_behavior, "Wait Only (Pause sequence)"))
+            
+            # Key to press widgets
+            key_label = ctk.CTkLabel(main_frame, text="Keyboard Key to Press:", font=ctk.CTkFont(weight="bold"))
+            key_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24", placeholder_text="e.g. E, Space, Enter")
             key_ent.insert(0, str(action.get('key_to_press') or ''))
-            key_ent.pack(fill="x", pady=(0, 10))
             self.fields['key_to_press'] = key_ent
             
+            def on_behavior_change(val):
+                if val == "Press Key (Execute keystroke)":
+                    key_label.pack(anchor="w", pady=(5, 2))
+                    key_ent.pack(fill="x", pady=(0, 10))
+                else:
+                    key_label.pack_forget()
+                    key_ent.pack_forget()
+                    
+            behavior_menu = ctk.CTkOptionMenu(
+                main_frame, 
+                values=["Wait Only (Pause sequence)", "Hover Only (Move cursor to icon)", "Click Mouse (Left Click center)", "Press Key (Execute keystroke)"], 
+                variable=self.behavior_var,
+                command=on_behavior_change,
+                fg_color="#2b2d31",
+                button_color="#2b2d31",
+                button_hover_color="#3d4047",
+                dropdown_fg_color="#1e1f22"
+            )
+            behavior_menu.pack(fill="x", pady=(0, 10))
+            
+            # Show/hide initially
+            if self.behavior_var.get() == "Press Key (Execute keystroke)":
+                key_label.pack(anchor="w", pady=(5, 2))
+                key_ent.pack(fill="x", pady=(0, 10))
+                
             self.add_conditional_fields(main_frame, action)
             
         elif action['type'] == 'pixel_wait':
@@ -478,8 +516,16 @@ class ActionEditorModal(Toplevel):
                 
         if hasattr(self, 'rel_var'):
             self.action['is_release'] = (self.rel_var.get() == "on")
-        if hasattr(self, 'click_var'):
-            self.action['click_on_match'] = (self.click_var.get() == "on")
+        if hasattr(self, 'behavior_var'):
+            behavior_map_rev = {
+                "Wait Only (Pause sequence)": "wait",
+                "Hover Only (Move cursor to icon)": "hover",
+                "Click Mouse (Left Click center)": "click",
+                "Press Key (Execute keystroke)": "press_key"
+            }
+            beh = behavior_map_rev.get(self.behavior_var.get(), "wait")
+            self.action['match_behavior'] = beh
+            self.action['click_on_match'] = (beh in ("click", "press_key", "hover"))
         if hasattr(self, 'cond_var'):
             self.action['is_conditional'] = (self.cond_var.get() == "on")
             
@@ -1070,20 +1116,30 @@ class MacroApp(ctk.CTk):
         click_val = getattr(self, 'last_snipe_click_default', False)
         
         key_to_press = None
+        match_behavior = "wait"
+        
         if click_val:
             dialog = ctk.CTkInputDialog(
-                text="Enter keyboard key to press on match (e.g. E, Space, F, Enter).\nLeave empty to just click the mouse:",
-                title="Key Press on Match"
+                text="Choose match action:\n• Type 'hover' to just move mouse to icon (no click)\n• Type a key (e.g. E, Space) to press a key\n• Leave empty to left click the mouse",
+                title="Action on Match"
             )
-            input_key = dialog.get_input()
-            if input_key and input_key.strip():
-                key_to_press = input_key.strip().upper()
+            input_val = dialog.get_input()
+            if input_val is not None:
+                val = input_val.strip().lower()
+                if val == "hover" or val == "h":
+                    match_behavior = "hover"
+                elif val:
+                    match_behavior = "press_key"
+                    key_to_press = val.upper()
+                else:
+                    match_behavior = "click"
         
         self.add_single_action_to_live_ui({
             'type': 'image_match_wait',
             'image_path': asset_path,
             'confidence': 0.85,
-            'click_on_match': click_val,
+            'click_on_match': click_val or (match_behavior != "wait"),
+            'match_behavior': match_behavior,
             'key_to_press': key_to_press,
             'delay': 0.5
         })
@@ -1413,7 +1469,14 @@ class MacroApp(ctk.CTk):
                         if goto_idx is not None and 1 <= goto_idx <= len(actions):
                             next_i = goto_idx - 1
                             
-                    if matched and action.get('click_on_match', False):
+                    behavior = action.get('match_behavior')
+                    if not behavior:
+                        if action.get('click_on_match', False):
+                            behavior = "press_key" if action.get('key_to_press') else "click"
+                        else:
+                            behavior = "wait"
+
+                    if matched and behavior != "wait":
                         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
                         h, w = template.shape[0], template.shape[1]
                         tx = max_loc[0] + w // 2
@@ -1426,24 +1489,28 @@ class MacroApp(ctk.CTk):
                             human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
                         else:
                             mouse_ctl.position = (tx, ty)
-                        time.sleep(random.uniform(0.08, 0.12))
                         
-                        kp = action.get('key_to_press')
-                        if kp:
-                            vk = get_vk_from_key_name(kp)
-                            if vk is not None:
-                                send_hardware_input(vk, is_release=False)
-                                time.sleep(random.uniform(0.04, 0.07))
-                                send_hardware_input(vk, is_release=True)
-                            else:
-                                try:
-                                    kb_ctl = keyboard.Controller()
-                                    kb_ctl.press(kp.lower())
+                        if behavior == "hover":
+                            pass  # Hover only, no click or keypress!
+                        elif behavior == "press_key":
+                            kp = action.get('key_to_press')
+                            if kp:
+                                time.sleep(random.uniform(0.08, 0.12))
+                                vk = get_vk_from_key_name(kp)
+                                if vk is not None:
+                                    send_hardware_input(vk, is_release=False)
                                     time.sleep(random.uniform(0.04, 0.07))
-                                    kb_ctl.release(kp.lower())
-                                except Exception as e:
-                                    print("Keyboard controller fallback error:", e)
-                        else:
+                                    send_hardware_input(vk, is_release=True)
+                                else:
+                                    try:
+                                        kb_ctl = keyboard.Controller()
+                                        kb_ctl.press(kp.lower())
+                                        time.sleep(random.uniform(0.04, 0.07))
+                                        kb_ctl.release(kp.lower())
+                                    except Exception as e:
+                                        print("Keyboard controller fallback error:", e)
+                        elif behavior == "click":
+                            time.sleep(random.uniform(0.08, 0.12))
                             mouse_ctl.press(mouse.Button.left)
                             time.sleep(random.uniform(0.04, 0.07))
                             mouse_ctl.release(mouse.Button.left)
