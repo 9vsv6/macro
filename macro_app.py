@@ -550,6 +550,7 @@ class MacroApp(ctk.CTk):
         self.toggle_text_trigger_view()
         self.start_global_hotkey_listeners()
         self.check_ui_queue()
+        self.refresh_profile_catalog_ui()
 
         # Hover Tooltips Configurations
         CTKTooltip(self.reset_anchor_btn, "Clear the anchored window target to make the macro run relative to the full screen.")
@@ -566,25 +567,27 @@ class MacroApp(ctk.CTk):
         CTKTooltip(self.snipe_wait_icon_btn, "Snip a specific target icon on screen. The macro will pause until it is detected on screen.")
         CTKTooltip(self.save_btn, "Export the current macro actions list and settings to a JSON file.")
         CTKTooltip(self.load_btn, "Import macro actions list and settings from a JSON file.")
-        CTKTooltip(self.create_profile_btn, "Create a new empty macro profile vector in your profile database.")
         CTKTooltip(self.clear_timeline_btn, "Remove all actions from the current pipeline timeline.")
 
     def setup_layout_grid(self):
-        # Configure layout with a top header and three main columns
+        # Configure layout with a top header and two main columns
         self.grid_rowconfigure(0, weight=0) # Header row
         self.grid_rowconfigure(1, weight=1) # Main workspace row
-        self.grid_columnconfigure(0, weight=1, minsize=240) 
-        self.grid_columnconfigure(1, weight=3, minsize=380) 
-        self.grid_columnconfigure(2, weight=4, minsize=440) 
+        self.grid_columnconfigure(0, weight=3, minsize=440) 
+        self.grid_columnconfigure(1, weight=4, minsize=480) 
 
         # ── TOP BRANDING & STATUS HEADER ──────────────────────────────────────────
         header_frame = ctk.CTkFrame(self, fg_color=HEADER_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=0, height=56)
-        header_frame.grid(row=0, column=0, columnspan=3, sticky="ew")
+        header_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
         header_frame.pack_propagate(False)
         
         # Logo and Title
         brand_lbl = ctk.CTkLabel(header_frame, text="⚡ VISION MACRO PRO", font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"), text_color=ACCENT_PURPLE)
         brand_lbl.pack(side="left", padx=20)
+
+        # Profile Manager Container in the Header
+        self.header_profile_container = ctk.CTkFrame(header_frame, fg_color="transparent")
+        self.header_profile_container.pack(side="left", padx=(10, 20), pady=14)
         
         # State capsule badge
         status_badge_frame = ctk.CTkFrame(header_frame, fg_color="#18181b", border_color=BORDER_COLOR, border_width=1, corner_radius=14, height=28)
@@ -594,20 +597,9 @@ class MacroApp(ctk.CTk):
         self.status_label = ctk.CTkLabel(status_badge_frame, text="● STABLE SYSTEM IDLE", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=TEXT_MUTED, padx=12, pady=4)
         self.status_label.pack()
 
-        # ── PROFILE EXPLORER (LEFT PANEL) ─────────────────────────────────────────
-        self.sidebar_frame = ctk.CTkFrame(self, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=0)
-        self.sidebar_frame.grid(row=1, column=0, sticky="nsew")
-        
-        ctk.CTkLabel(self.sidebar_frame, text="📁 PROFILE EXPLORER", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=16, pady=(20, 10))
-        self.profile_listbox = ctk.CTkScrollableFrame(self.sidebar_frame, fg_color=APP_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=6)
-        self.profile_listbox.pack(fill="both", expand=True, padx=14, pady=10)
-        
-        self.create_profile_btn = ctk.CTkButton(self.sidebar_frame, text="➕ Create Profile", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=12, weight="bold"), height=32, command=self.create_new_profile_entry)
-        self.create_profile_btn.pack(fill="x", padx=14, pady=14)
-
-        # ── PROPERTIES CONTROLS (MIDDLE PANEL - TABBED VIEW) ──────────────────────
+        # ── PROPERTIES CONTROLS (LEFT PANEL - TABBED VIEW) ──────────────────────
         self.middle_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.middle_frame.grid(row=1, column=1, sticky="nsew", padx=14, pady=14)
+        self.middle_frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=14)
 
         # Segmented Tab View
         self.tabview = ctk.CTkTabview(
@@ -627,7 +619,6 @@ class MacroApp(ctk.CTk):
         
         tab_desk = self.tabview.add("🎮 Action Desk")
         tab_drivers = self.tabview.add("⌨️ Drivers")
-        tab_backup = self.tabview.add("💾 Backup")
 
         # ── Tab 1: Action Desk Controls ──
         # Workspace action buttons
@@ -763,26 +754,22 @@ class MacroApp(ctk.CTk):
         gp_color = ACCENT_GREEN if HAS_PYGAME else TEXT_MUTED
         ctk.CTkLabel(gp_body, text=gp_status_text, font=ctk.CTkFont(family="Consolas", size=11), text_color=gp_color).pack(anchor="w")
 
-        # ── Tab 4: Backup Profiles ──
-        fb = ctk.CTkFrame(tab_backup, fg_color="transparent")
-        fb.pack(fill="both", expand=True, padx=12, pady=12)
-        ctk.CTkLabel(fb, text="💾 PROFILE STORAGE CONFIGURATIONS", font=ctk.CTkFont(size=12, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", pady=(0, 4))
-        ctk.CTkLabel(fb, text="Backup or load your timeline actions and anchor target options to/from a profile file.", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED, wraplength=310, justify="left").pack(anchor="w", pady=(0, 20))
-        
-        self.save_btn = ctk.CTkButton(fb, text="💾 Save Profile to JSON", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=12, weight="bold"), height=36, command=self.export_macro)
-        self.save_btn.pack(fill="x", pady=6)
-        self.load_btn = ctk.CTkButton(fb, text="📂 Load Profile from JSON", fg_color="#2b2d31", hover_color="#3d4047", font=ctk.CTkFont(size=12, weight="bold"), height=36, command=self.import_macro)
-        self.load_btn.pack(fill="x", pady=6)
-
         # ── TIMELINE FLOW (RIGHT PANEL) ───────────────────────────────────────────
         self.right_frame = ctk.CTkFrame(self, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=12)
-        self.right_frame.grid(row=1, column=2, sticky="nsew", padx=20, pady=20)
+        self.right_frame.grid(row=1, column=1, sticky="nsew", padx=20, pady=20)
 
         th = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         th.pack(fill="x", pady=(16, 10), padx=16)
         ctk.CTkLabel(th, text="Visual Pipeline Flow", font=ctk.CTkFont(size=15, weight="bold"), text_color=TEXT_MAIN).pack(side="left")
+        
         self.clear_timeline_btn = ctk.CTkButton(th, text="🗑️ Clear Timeline", fg_color=ACCENT_RED, hover_color="#b91c1c", font=ctk.CTkFont(size=11, weight="bold"), width=110, height=28, command=self.clear_macro)
-        self.clear_timeline_btn.pack(side="right")
+        self.clear_timeline_btn.pack(side="right", padx=(4, 0))
+
+        self.save_btn = ctk.CTkButton(th, text="📤 Export JSON", fg_color="#2b2d31", hover_color="#3d4047", font=ctk.CTkFont(size=11, weight="bold"), width=110, height=28, command=self.export_macro)
+        self.save_btn.pack(side="right", padx=4)
+
+        self.load_btn = ctk.CTkButton(th, text="📥 Load JSON", fg_color="#2b2d31", hover_color="#3d4047", font=ctk.CTkFont(size=11, weight="bold"), width=100, height=28, command=self.import_macro)
+        self.load_btn.pack(side="right", padx=4)
 
         self.timeline_scroll = ctk.CTkScrollableFrame(self.right_frame, fg_color=APP_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
         self.timeline_scroll.pack(fill="both", expand=True, padx=16, pady=4)
@@ -994,14 +981,38 @@ class MacroApp(ctk.CTk):
         self.refresh_timeline_ui()
 
     def refresh_profile_catalog_ui(self):
-        for widget in self.profile_listbox.winfo_children(): widget.destroy()
+        for widget in self.header_profile_container.winfo_children(): widget.destroy()
         if not self.profiles_db: self.profiles_db["Default Profile"] = []
         for p_name in self.profiles_db.keys():
             is_active = (p_name == self.active_profile_name)
-            bg = "#1e1b4b" if is_active else "transparent"
-            lbl_color = TEXT_MAIN if is_active else TEXT_MUTED
-            btn = ctk.CTkButton(self.profile_listbox, text=f"🗃️ {p_name}", font=ctk.CTkFont(size=12, weight="bold" if is_active else "normal"), fg_color=bg, text_color=lbl_color, anchor="w", height=30, command=lambda name=p_name: self.select_profile_catalog_node(name))
-            btn.pack(fill="x", pady=2, padx=4)
+            bg = "#8b5cf6" if is_active else "#2b2d31"
+            hover = "#7c3aed" if is_active else "#3d4047"
+            btn = ctk.CTkButton(
+                self.header_profile_container, 
+                text=p_name, 
+                font=ctk.CTkFont(size=11, weight="bold" if is_active else "normal"), 
+                fg_color=bg, 
+                hover_color=hover,
+                text_color=TEXT_MAIN, 
+                width=80, 
+                height=26, 
+                command=lambda name=p_name: self.select_profile_catalog_node(name)
+            )
+            btn.pack(side="left", padx=4)
+
+        self.create_profile_btn = ctk.CTkButton(
+            self.header_profile_container,
+            text="+",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#2b2d31",
+            hover_color="#3d4047",
+            text_color=TEXT_MAIN,
+            width=26,
+            height=26,
+            command=self.create_new_profile_entry
+        )
+        self.create_profile_btn.pack(side="left", padx=4)
+        CTKTooltip(self.create_profile_btn, "Create a new empty macro profile vector in your profile database.")
 
     def trigger_screen_sniper_flow(self, click_on_match=False):
         if self.is_playing or self.is_recording: return
