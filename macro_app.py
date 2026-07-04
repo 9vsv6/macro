@@ -10,10 +10,7 @@ import customtkinter as ctk
 from pynput import mouse, keyboard
 from tkinter import filedialog, messagebox, Toplevel, Canvas
 import queue
-import cv2
 import asyncio
-import pyautogui
-import numpy as np
 from PIL import Image, ImageTk  
 
 # Try importing pygame for native DirectInput/XInput controller polling hooks
@@ -929,6 +926,7 @@ class MacroApp(ctk.CTk):
         ScreenSnipper(self, self.process_center_panel_sniped_trigger)
 
     def process_center_panel_sniped_trigger(self, x, y, w, h):
+        import pyautogui
         captured_matrix = pyautogui.screenshot(region=(x, y, w, h))
         self.deiconify()
         os.makedirs("./assets", exist_ok=True)
@@ -985,6 +983,7 @@ class MacroApp(ctk.CTk):
         ScreenSnipper(self, self.process_sniped_bounding_box_assets)
 
     def process_sniped_bounding_box_assets(self, x, y, w, h):
+        import pyautogui
         sniped_img = pyautogui.screenshot(region=(x, y, w, h))
         self.deiconify()
         os.makedirs("./assets", exist_ok=True)
@@ -1223,6 +1222,9 @@ class MacroApp(ctk.CTk):
                     break
 
     def play_macro(self):
+        import cv2
+        import pyautogui
+        import numpy as np
         mouse_ctl = mouse.Controller()
         # Keep full actions list for direct 1-to-1 timeline index mapping
         actions = list(self.macro_actions)
@@ -1845,6 +1847,7 @@ class MacroApp(ctk.CTk):
         self.global_hotkey_listener.start()
 
     def check_global_text_trigger_match(self):
+        import pyautogui
         # Determine region
         if self.global_text_trigger_region:
             rx, ry, rw, rh = self.global_text_trigger_region
