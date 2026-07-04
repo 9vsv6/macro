@@ -126,6 +126,20 @@ def send_hardware_input(vk_code, is_release=False):
     SendInput(1, ctypes.pointer(command), ctypes.sizeof(command))
     return True
 
+def send_hardware_mouse_click(button_name="left", is_release=False):
+    btn = button_name.lower()
+    if "right" in btn:
+        flags = 0x0010 if is_release else 0x0008
+    elif "middle" in btn:
+        flags = 0x0040 if is_release else 0x0020
+    else:
+        flags = 0x0004 if is_release else 0x0002
+        
+    ii_ = Input_I()
+    ii_.mi = MouseInput(0, 0, 0, flags, 0, ctypes.pointer(ctypes.c_ulong(0)))
+    command = Input(ctypes.c_ulong(0), ii_)
+    SendInput(1, ctypes.pointer(command), ctypes.sizeof(command))
+
 def get_vk_from_key_name(key_name):
     key_map = {
         "SPACE": 0x20, "ENTER": 0x0D, "ESC": 0x1B, "TAB": 0x09, "BACKSPACE": 0x08,
@@ -1578,9 +1592,9 @@ class MacroApp(ctk.CTk):
                                         print("Keyboard controller fallback error:", e)
                         elif behavior == "click":
                             time.sleep(random.uniform(0.08, 0.12))
-                            mouse_ctl.press(mouse.Button.left)
+                            send_hardware_mouse_click("left", is_release=False)
                             time.sleep(random.uniform(0.04, 0.07))
-                            mouse_ctl.release(mouse.Button.left)
+                            send_hardware_mouse_click("left", is_release=True)
 
                 elif action['type'] == 'pixel_wait':
                     px, py = base_x + action['rel_x'], base_y + action['rel_y']
@@ -1682,9 +1696,9 @@ class MacroApp(ctk.CTk):
                         else:
                             mouse_ctl.position = (click_x, click_y)
                         time.sleep(random.uniform(0.08, 0.12))
-                        mouse_ctl.press(mouse.Button.left)
+                        send_hardware_mouse_click("left", is_release=False)
                         time.sleep(random.uniform(0.04, 0.07))
-                        mouse_ctl.release(mouse.Button.left)
+                        send_hardware_mouse_click("left", is_release=True)
                         
                     if is_cond:
                         goto_idx = action.get('goto_true') if matched else action.get('goto_false')
@@ -1702,22 +1716,17 @@ class MacroApp(ctk.CTk):
                     else:
                         mouse_ctl.position = (tx, ty)
                     btn_val = action['details'][2]
+                    btn_name = "left"
                     if isinstance(btn_val, str):
-                        if 'left' in btn_val.lower():
-                            btn = mouse.Button.left
-                        elif 'right' in btn_val.lower():
-                            btn = mouse.Button.right
+                        if 'right' in btn_val.lower():
+                            btn_name = "right"
                         elif 'middle' in btn_val.lower():
-                            btn = mouse.Button.middle
-                        else:
-                            btn = mouse.Button.left
-                    else:
-                        btn = btn_val
+                            btn_name = "middle"
                     
                     time.sleep(random.uniform(0.08, 0.12))
-                    mouse_ctl.press(btn)
+                    send_hardware_mouse_click(btn_name, is_release=False)
                     time.sleep(random.uniform(0.04, 0.07))
-                    mouse_ctl.release(btn)
+                    send_hardware_mouse_click(btn_name, is_release=True)
 
                 elif action['type'] == 'keyboard':
                     vk, rel = action.get('vk'), action.get('is_release', False)
@@ -1888,42 +1897,26 @@ class MacroApp(ctk.CTk):
 
     def trigger_manual_action_choice_flow(self):
         if self.is_playing or self.is_recording: return
-        AddActionChoiceModal(self, self.handle_manual_action_choice)
-
-    def handle_manual_action_choice(self, choice):
-        if choice == 'keyboard':
+        if not self.listening_for_manual_action:
             self.listening_for_manual_action = True
-            self.add_manual_btn.configure(text="Press any key...", fg_color=ACCENT_RED)
+            self.add_manual_btn.configure(text="Listening...", fg_color=ACCENT_RED)
+            
+            # Start both mouse and keyboard listeners
             self.manual_keyboard_listener = keyboard.Listener(on_press=self._on_inline_key_press)
+            self.manual_mouse_listener = mouse.Listener(on_click=self._on_inline_mouse_click)
             self.manual_keyboard_listener.start()
-        elif choice == 'mouse':
-            self.withdraw()
-            time.sleep(0.2)
-            ClickPointPicker(self, self.handle_manual_mouse_picked)
-
-    def handle_manual_mouse_picked(self, x, y):
-        self.deiconify()
-        
-        rel_x, rel_y = x, y
-        if self.recorded_target_hwnd:
-            rect = RECT()
-            if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
-                rel_x = x - rect.left
-                rel_y = y - rect.top
-                
-        self.add_single_action_to_live_ui({
-            'type': 'mouse',
-            'rel_x': rel_x,
-            'rel_y': rel_y,
-            'details': (x, y, "Button.left"),
-            'delay': 1.0
-        })
+            self.manual_mouse_listener.start()
+        else:
+            self.stop_inline_listener()
 
     def stop_inline_listener(self):
         self.listening_for_manual_action = False
         self.add_manual_btn.configure(text="➕ Add Action", fg_color="#2b2d31")
         if hasattr(self, 'manual_keyboard_listener'):
             try: self.manual_keyboard_listener.stop()
+            except: pass
+        if hasattr(self, 'manual_mouse_listener'):
+            try: self.manual_mouse_listener.stop()
             except: pass
 
     def _on_inline_key_press(self, key):
@@ -1932,6 +1925,34 @@ class MacroApp(ctk.CTk):
             self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':False,'delay':1.0}))
             self.after(0, lambda: self.add_single_action_to_live_ui({'type':'keyboard','vk':vk,'name':name,'is_release':True,'delay':0.05}))
         self.after(0, self.stop_inline_listener)
+
+    def _on_inline_mouse_click(self, x, y, button, pressed):
+        if pressed:
+            # Avoid recording clicks that happen inside the macro app window
+            try:
+                ax, ay = self.winfo_rootx(), self.winfo_rooty()
+                aw, ah = self.winfo_width(), self.winfo_height()
+                if ax <= x <= ax + aw and ay <= y <= ay + ah:
+                    return
+            except Exception:
+                pass
+                
+            # Calculate relative coordinates if anchor is set
+            rel_x, rel_y = x, y
+            if self.recorded_target_hwnd:
+                rect = RECT()
+                if GetWindowRect(self.recorded_target_hwnd, ctypes.byref(rect)):
+                    rel_x = x - rect.left
+                    rel_y = y - rect.top
+                    
+            self.after(0, lambda: self.add_single_action_to_live_ui({
+                'type': 'mouse',
+                'rel_x': rel_x,
+                'rel_y': rel_y,
+                'details': (x, y, str(button)),
+                'delay': 1.0
+            }))
+            self.after(0, self.stop_inline_listener)
 
     def update_row_texts_only(self):
         for idx, action in enumerate(self.macro_actions):
