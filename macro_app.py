@@ -100,7 +100,7 @@ def human_mouse_move(mouse_ctl, start_x, start_y, target_x, target_y, steps=20):
         t = i / steps
         t_skewed = math.sin(t * math.pi / 2) if t < 0.5 else 1 - math.cos(t * math.pi / 2)
         curr_x = int((1-t_skewed)**3*start_x + 3*(1-t_skewed)**2*t_skewed*cx1 + 3*(1-t_skewed)*t_skewed**2*cx2 + t_skewed**3*target_x)
-        curr_y = int((1-t_skewed)**3*start_y + 3*(1-t_skewed)**2*t_skewed*cy1 + 3*(1-t_skewed)*t_skewed**2*cx2 + t_skewed**3*target_y)
+        curr_y = int((1-t_skewed)**3*start_y + 3*(1-t_skewed)**2*t_skewed*cy1 + 3*(1-t_skewed)*t_skewed**2*cy2 + t_skewed**3*target_y)
         mouse_ctl.position = (curr_x, curr_y)
         time.sleep(random.uniform(0.001, 0.002))
 
@@ -1287,7 +1287,7 @@ class MacroApp(ctk.CTk):
             # 1. Global Image Trigger
             if self.img_trigger_switch_var.get() == "on" and self.global_trigger_image_path and os.path.exists(self.global_trigger_image_path):
                 global_matched = False
-                template = cv2.imread(self.global_trigger_image_path, cv2.IMREAD_UNCHANGED)
+                template = cv2.imread(self.global_trigger_image_path, cv2.IMREAD_COLOR)
                 while self.is_playing and not global_matched:
                     screen = cv2.cvtColor(np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
                     res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
@@ -1343,7 +1343,7 @@ class MacroApp(ctk.CTk):
                 next_i = i + 1
 
                 if action['type'] == 'image_match_wait':
-                    template = cv2.imread(action['image_path'], cv2.IMREAD_UNCHANGED)
+                    template = cv2.imread(action['image_path'], cv2.IMREAD_COLOR)
                     matched = False
                     is_cond = action.get('is_conditional', False)
                     
@@ -1377,8 +1377,10 @@ class MacroApp(ctk.CTk):
                             human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
                         else:
                             mouse_ctl.position = (tx, ty)
-                        time.sleep(random.uniform(0.005, 0.01))
-                        mouse_ctl.click(mouse.Button.left)
+                        time.sleep(random.uniform(0.08, 0.12))
+                        mouse_ctl.press(mouse.Button.left)
+                        time.sleep(random.uniform(0.04, 0.07))
+                        mouse_ctl.release(mouse.Button.left)
 
                 elif action['type'] == 'pixel_wait':
                     px, py = base_x + action['rel_x'], base_y + action['rel_y']
@@ -1479,8 +1481,10 @@ class MacroApp(ctk.CTk):
                             human_mouse_move(mouse_ctl, sp[0], sp[1], click_x, click_y)
                         else:
                             mouse_ctl.position = (click_x, click_y)
-                        time.sleep(random.uniform(0.005, 0.01))
-                        mouse_ctl.click(mouse.Button.left)
+                        time.sleep(random.uniform(0.08, 0.12))
+                        mouse_ctl.press(mouse.Button.left)
+                        time.sleep(random.uniform(0.04, 0.07))
+                        mouse_ctl.release(mouse.Button.left)
                         
                     if is_cond:
                         goto_idx = action.get('goto_true') if matched else action.get('goto_false')
@@ -1497,8 +1501,6 @@ class MacroApp(ctk.CTk):
                         human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
                     else:
                         mouse_ctl.position = (tx, ty)
-                    time.sleep(random.uniform(0.005, 0.01))
-                    
                     btn_val = action['details'][2]
                     if isinstance(btn_val, str):
                         if 'left' in btn_val.lower():
@@ -1511,7 +1513,11 @@ class MacroApp(ctk.CTk):
                             btn = mouse.Button.left
                     else:
                         btn = btn_val
-                    mouse_ctl.click(btn)
+                    
+                    time.sleep(random.uniform(0.08, 0.12))
+                    mouse_ctl.press(btn)
+                    time.sleep(random.uniform(0.04, 0.07))
+                    mouse_ctl.release(btn)
 
                 elif action['type'] == 'keyboard':
                     vk, rel = action.get('vk'), action.get('is_release', False)
