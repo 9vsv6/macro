@@ -533,8 +533,17 @@ class MacroApp(ctk.CTk):
         self.play_hk_btn = ctk.CTkButton(self.hk_body, text=self.selected_play_hotkey, width=120, height=26, fg_color="#222226", hover_color="#2d2d34", command=lambda: self.start_listening_for_hotkey('play'))
         self.play_hk_btn.grid(row=1, column=1, padx=2, pady=5, sticky="e")
 
-        self.add_manual_btn = ctk.CTkButton(self.et_container, text="➕ Add Keyboard Key", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.toggle_inline_action_listener)
-        self.add_manual_btn.pack(fill="x", expand=True, padx=2)
+        self.et_container.grid_columnconfigure(0, weight=1)
+        self.et_container.grid_columnconfigure(1, weight=1)
+
+        self.add_manual_btn = ctk.CTkButton(self.et_container, text="➕ Add Keyboard Key", fg_color=ACCENT_BLUE, hover_color="#1d4ed8", font=ctk.CTkFont(size=11, weight="bold"), height=34, command=self.toggle_inline_action_listener)
+        self.add_manual_btn.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6), padx=2)
+
+        self.snipe_click_icon_btn = ctk.CTkButton(self.et_container, text="🎯 Snipe & Click Icon", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=11, weight="bold"), height=34, command=lambda: self.trigger_screen_sniper_flow(click_on_match=True))
+        self.snipe_click_icon_btn.grid(row=1, column=0, sticky="ew", padx=2)
+
+        self.snipe_wait_icon_btn = ctk.CTkButton(self.et_container, text="👁️ Snipe & Wait Icon", fg_color=ACCENT_GREEN, hover_color="#059669", font=ctk.CTkFont(size=11, weight="bold"), height=34, command=lambda: self.trigger_screen_sniper_flow(click_on_match=False))
+        self.snipe_wait_icon_btn.grid(row=1, column=1, sticky="ew", padx=2)
 
         self.toggle_image_trigger_view()
         self.toggle_text_trigger_view()
@@ -552,6 +561,8 @@ class MacroApp(ctk.CTk):
         CTKTooltip(self.add_ocr_click_btn, "Add text to Wait & Click. If 'Scan Whole Screen' is on, it scans the whole screen; otherwise, it triggers snipping.")
         CTKTooltip(self.add_ocr_wait_btn, "Add text to Wait for. If 'Scan Whole Screen' is on, it scans the whole screen; otherwise, it triggers snipping.")
         CTKTooltip(self.add_manual_btn, "Click to listen for a single mouse click or keyboard key press to add directly to the timeline.")
+        CTKTooltip(self.snipe_click_icon_btn, "Snip a specific target icon on screen. The macro will wait for it to appear and click it.")
+        CTKTooltip(self.snipe_wait_icon_btn, "Snip a specific target icon on screen. The macro will pause until it is detected on screen.")
         CTKTooltip(self.save_btn, "Export the current macro actions list and settings to a JSON file.")
         CTKTooltip(self.load_btn, "Import macro actions list and settings from a JSON file.")
         CTKTooltip(self.create_profile_btn, "Create a new empty macro profile vector in your profile database.")
@@ -976,8 +987,9 @@ class MacroApp(ctk.CTk):
             btn = ctk.CTkButton(self.profile_listbox, text=f"🗃️ {p_name}", font=ctk.CTkFont(size=12, weight="bold" if is_active else "normal"), fg_color=bg, text_color=lbl_color, anchor="w", height=30, command=lambda name=p_name: self.select_profile_catalog_node(name))
             btn.pack(fill="x", pady=2, padx=4)
 
-    def trigger_screen_sniper_flow(self):
+    def trigger_screen_sniper_flow(self, click_on_match=False):
         if self.is_playing or self.is_recording: return
+        self.last_snipe_click_default = click_on_match
         self.withdraw() 
         time.sleep(0.2)
         ScreenSnipper(self, self.process_sniped_bounding_box_assets)
@@ -990,10 +1002,13 @@ class MacroApp(ctk.CTk):
         asset_path = f"./assets/snippet_{int(time.time())}.png"
         sniped_img.save(asset_path)
         
+        click_val = getattr(self, 'last_snipe_click_default', False)
+        
         self.add_single_action_to_live_ui({
             'type': 'image_match_wait',
             'image_path': asset_path,
             'confidence': 0.85,
+            'click_on_match': click_val,
             'delay': 0.5
         })
 
@@ -1689,7 +1704,18 @@ class MacroApp(ctk.CTk):
         row.pack(fill="x", pady=3, padx=5)
         row.pack_propagate(False)
         
-        # No image preview loaded to keep timeline clean
+        # Show image preview thumbnail next to action description
+        if action['type'] == 'image_match_wait' and 'image_path' in action and os.path.exists(action['image_path']):
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(action['image_path'])
+                img.thumbnail((24, 24))
+                photo = ImageTk.PhotoImage(img)
+                row._thumbnail = photo # Keep reference
+                thumb_label = ctk.CTkLabel(row, image=photo, text="")
+                thumb_label.pack(side="left", padx=(6, 2))
+            except Exception as e:
+                pass
 
         lbl = ctk.CTkButton(row, text=self._action_text(idx, action), anchor="w", fg_color="transparent", font=ctk.CTkFont(family="Consolas", size=11), corner_radius=0, command=lambda i=idx: self.select_timeline_item(i))
         lbl.pack(side="left", fill="both", expand=True)
@@ -1976,7 +2002,10 @@ class MacroApp(ctk.CTk):
     def _action_text(self, idx, action):
         if action['type'] == 'mouse': return f"🎯 [{idx+1:02d}] Click ➔ [X:{action['rel_x']}, Y:{action['rel_y']}]"
         if action['type'] == 'pixel_wait': return f"🎨 [{idx+1:02d}] Pixel Match ➔ {action['color']}"
-        if action['type'] == 'image_match_wait': return f"📸 [{idx+1:02d}] Template Search ➔ {os.path.basename(action['image_path'])}"
+        if action['type'] == 'image_match_wait':
+            click_flag = "Click" if action.get('click_on_match', False) else "Wait"
+            cond_flag = f" (Branch T➔{action.get('goto_true')} F➔{action.get('goto_false')})" if action.get('is_conditional', False) else ""
+            return f"📸 [{idx+1:02d}] Icon Match ➔ {click_flag} {os.path.basename(action['image_path'])}{cond_flag}"
         if action['type'] == 'ocr_wait': return f"📝 [{idx+1:02d}] Wait for Text ➔ \"{action['text_query']}\""
         if action['type'] == 'ocr_click': return f"🔍 [{idx+1:02d}] OCR Click ➔ \"{action['text_query']}\""
         
