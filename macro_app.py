@@ -21,16 +21,16 @@ except ImportError:
     HAS_PYGAME = False
 
 # Enhanced Premium Color Palette
-APP_BG = "#1e1f22"          
-PANEL_BG = "#2b2d31"        
-HEADER_BG = "#1e1f22"       
-BORDER_COLOR = "#3f424a"     
-ACCENT_BLUE = "#5865f2"     
-ACCENT_GREEN = "#23a55a"    
-ACCENT_RED = "#da373c"      
-ACCENT_PURPLE = "#9b5de5"   
-TEXT_MAIN = "#f2f3f5"       
-TEXT_MUTED = "#949ba4"      
+APP_BG = "#191919"          
+PANEL_BG = "#202020"        
+HEADER_BG = "#202020"       
+BORDER_COLOR = "#2d2d2d"     
+ACCENT_BLUE = "#0078d4"     
+ACCENT_GREEN = "#107c41"    
+ACCENT_RED = "#c42b1c"      
+ACCENT_PURPLE = "#881798"   
+TEXT_MAIN = "#ffffff"       
+TEXT_MUTED = "#a0a0a0"      
 
 ctk.set_appearance_mode("Dark")
 
