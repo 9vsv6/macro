@@ -53,6 +53,6 @@ python macro_app.py
 To compile the application into a standalone Windows `.exe` executable:
 ```bash
 pip install pyinstaller
-pyinstaller macro_app.spec
+pyinstaller --noconsole --onefile --collect-all customtkinter --clean macro_app.py
 ```
 The compiled output will be available under the `dist/` directory.
