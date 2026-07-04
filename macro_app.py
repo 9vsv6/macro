@@ -126,6 +126,19 @@ def send_hardware_input(vk_code, is_release=False):
     SendInput(1, ctypes.pointer(command), ctypes.sizeof(command))
     return True
 
+def get_vk_from_key_name(key_name):
+    key_map = {
+        "SPACE": 0x20, "ENTER": 0x0D, "ESC": 0x1B, "TAB": 0x09, "BACKSPACE": 0x08,
+        "SHIFT": 0xA0, "CTRL": 0xA2, "ALT": 0xA4, "CAPS": 0x14,
+        "UP": 0x26, "DOWN": 0x28, "LEFT": 0x25, "RIGHT": 0x27
+    }
+    k_upper = key_name.upper().strip()
+    if k_upper in key_map:
+        return key_map[k_upper]
+    if len(k_upper) == 1:
+        return ord(k_upper)
+    return None
+
 class CTKTooltip:
     def __init__(self, widget, text):
         self.widget = widget
@@ -343,6 +356,13 @@ class ActionEditorModal(Toplevel):
             self.click_var = ctk.StringVar(value="on" if action.get('click_on_match', False) else "off")
             click_cb = ctk.CTkCheckBox(main_frame, text="Click matched target center", variable=self.click_var, onvalue="on", offvalue="off")
             click_cb.pack(anchor="w", pady=5)
+
+            # Key to press
+            ctk.CTkLabel(main_frame, text="Keyboard Key to Press (Optional):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            key_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24", placeholder_text="e.g. E, Space, Enter (leave blank to click mouse)")
+            key_ent.insert(0, str(action.get('key_to_press') or ''))
+            key_ent.pack(fill="x", pady=(0, 10))
+            self.fields['key_to_press'] = key_ent
             
             self.add_conditional_fields(main_frame, action)
             
@@ -451,6 +471,10 @@ class ActionEditorModal(Toplevel):
                 self.action[k] = int(val) if val.isdigit() else None
             else:
                 self.action[k] = v.get()
+                
+        if 'key_to_press' in self.action:
+            val = str(self.action['key_to_press']).strip()
+            self.action['key_to_press'] = val.upper() if val else None
                 
         if hasattr(self, 'rel_var'):
             self.action['is_release'] = (self.rel_var.get() == "on")
@@ -1031,11 +1055,22 @@ class MacroApp(ctk.CTk):
         
         click_val = getattr(self, 'last_snipe_click_default', False)
         
+        key_to_press = None
+        if click_val:
+            dialog = ctk.CTkInputDialog(
+                text="Enter keyboard key to press on match (e.g. E, Space, F, Enter).\nLeave empty to just click the mouse:",
+                title="Key Press on Match"
+            )
+            input_key = dialog.get_input()
+            if input_key and input_key.strip():
+                key_to_press = input_key.strip().upper()
+        
         self.add_single_action_to_live_ui({
             'type': 'image_match_wait',
             'image_path': asset_path,
             'confidence': 0.85,
             'click_on_match': click_val,
+            'key_to_press': key_to_press,
             'delay': 0.5
         })
 
@@ -1378,9 +1413,26 @@ class MacroApp(ctk.CTk):
                         else:
                             mouse_ctl.position = (tx, ty)
                         time.sleep(random.uniform(0.08, 0.12))
-                        mouse_ctl.press(mouse.Button.left)
-                        time.sleep(random.uniform(0.04, 0.07))
-                        mouse_ctl.release(mouse.Button.left)
+                        
+                        kp = action.get('key_to_press')
+                        if kp:
+                            vk = get_vk_from_key_name(kp)
+                            if vk is not None:
+                                send_hardware_input(vk, is_release=False)
+                                time.sleep(random.uniform(0.04, 0.07))
+                                send_hardware_input(vk, is_release=True)
+                            else:
+                                try:
+                                    kb_ctl = keyboard.Controller()
+                                    kb_ctl.press(kp.lower())
+                                    time.sleep(random.uniform(0.04, 0.07))
+                                    kb_ctl.release(kp.lower())
+                                except Exception as e:
+                                    print("Keyboard controller fallback error:", e)
+                        else:
+                            mouse_ctl.press(mouse.Button.left)
+                            time.sleep(random.uniform(0.04, 0.07))
+                            mouse_ctl.release(mouse.Button.left)
 
                 elif action['type'] == 'pixel_wait':
                     px, py = base_x + action['rel_x'], base_y + action['rel_y']
@@ -2036,7 +2088,11 @@ class MacroApp(ctk.CTk):
         if action['type'] == 'mouse': return f"🎯 [{idx+1:02d}] Click ➔ [X:{action['rel_x']}, Y:{action['rel_y']}]"
         if action['type'] == 'pixel_wait': return f"🎨 [{idx+1:02d}] Pixel Match ➔ {action['color']}"
         if action['type'] == 'image_match_wait':
-            click_flag = "Click" if action.get('click_on_match', False) else "Wait"
+            kp = action.get('key_to_press')
+            if kp:
+                click_flag = f"Press [{kp.upper()}]"
+            else:
+                click_flag = "Click" if action.get('click_on_match', False) else "Wait"
             cond_flag = f" (Branch T➔{action.get('goto_true')} F➔{action.get('goto_false')})" if action.get('is_conditional', False) else ""
             return f"📸 [{idx+1:02d}] Icon Match ➔ {click_flag} {os.path.basename(action['image_path'])}{cond_flag}"
         if action['type'] == 'ocr_wait': return f"📝 [{idx+1:02d}] Wait for Text ➔ \"{action['text_query']}\""
