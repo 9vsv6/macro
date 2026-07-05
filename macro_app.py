@@ -90,6 +90,18 @@ def get_screen_pixel_color(x, y):
     return f"#{pixel & 0xFF:02x}{(pixel >> 8) & 0xFF:02x}{(pixel >> 16) & 0xFF:02x}".upper()
 
 # ── Humanized Path-Tracking Algorithms (Bézier Matrix) ────────────────────────
+def send_hardware_mouse_move(target_x, target_y):
+    user32 = ctypes.windll.user32
+    sw = user32.GetSystemMetrics(0)
+    sh = user32.GetSystemMetrics(1)
+    nx = int((target_x * 65535) / (sw - 1)) if sw > 1 else 0
+    ny = int((target_y * 65535) / (sh - 1)) if sh > 1 else 0
+    flags = 0x8000 | 0x0001
+    ii_ = Input_I()
+    ii_.mi = MouseInput(nx, ny, 0, flags, 0, ctypes.pointer(ctypes.c_ulong(0)))
+    command = Input(ctypes.c_ulong(0), ii_)
+    SendInput(1, ctypes.pointer(command), ctypes.sizeof(command))
+
 def human_mouse_move(mouse_ctl, start_x, start_y, target_x, target_y, steps=20):
     if start_x == target_x and start_y == target_y: return
     cx1 = start_x + (target_x - start_x) * random.uniform(0.1, 0.3) + random.randint(-10, 10)
@@ -101,7 +113,7 @@ def human_mouse_move(mouse_ctl, start_x, start_y, target_x, target_y, steps=20):
         t_skewed = math.sin(t * math.pi / 2) if t < 0.5 else 1 - math.cos(t * math.pi / 2)
         curr_x = int((1-t_skewed)**3*start_x + 3*(1-t_skewed)**2*t_skewed*cx1 + 3*(1-t_skewed)*t_skewed**2*cx2 + t_skewed**3*target_x)
         curr_y = int((1-t_skewed)**3*start_y + 3*(1-t_skewed)**2*t_skewed*cy1 + 3*(1-t_skewed)*t_skewed**2*cy2 + t_skewed**3*target_y)
-        mouse_ctl.position = (curr_x, curr_y)
+        send_hardware_mouse_move(curr_x, curr_y)
         time.sleep(random.uniform(0.001, 0.002))
 
 # ── SendInput Native Structures ───────────────────────────────────────────────
@@ -1702,9 +1714,11 @@ class MacroApp(ctk.CTk):
                                 sp = mouse_ctl.position
                                 human_mouse_move(mouse_ctl, sp[0], sp[1], cx, cy)
                             else:
-                                mouse_ctl.position = (cx, cy)
+                                send_hardware_mouse_move(cx, cy)
                             time.sleep(random.uniform(0.05, 0.1))
-                            mouse_ctl.click(mouse.Button.left)
+                            send_hardware_mouse_click("left", is_release=False)
+                            time.sleep(random.uniform(0.04, 0.07))
+                            send_hardware_mouse_click("left", is_release=True)
                     else:
                         time.sleep(0.2)
 
@@ -1774,7 +1788,7 @@ class MacroApp(ctk.CTk):
                             sp = mouse_ctl.position
                             human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
                         else:
-                            mouse_ctl.position = (tx, ty)
+                            send_hardware_mouse_move(tx, ty)
                         
                         if behavior == "hover":
                             pass  # Hover only, no click or keypress!
@@ -1915,7 +1929,7 @@ class MacroApp(ctk.CTk):
                             sp = mouse_ctl.position
                             human_mouse_move(mouse_ctl, sp[0], sp[1], click_x, click_y)
                         else:
-                            mouse_ctl.position = (click_x, click_y)
+                            send_hardware_mouse_move(click_x, click_y)
                         if self.fast_click_switch_var.get() == "on":
                             send_hardware_mouse_click("left", is_release=False)
                             send_hardware_mouse_click("left", is_release=True)
@@ -1941,7 +1955,7 @@ class MacroApp(ctk.CTk):
                             sp = mouse_ctl.position
                             human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
                         else:
-                            mouse_ctl.position = (tx, ty)
+                            send_hardware_mouse_move(tx, ty)
                     btn_val = action['details'][2]
                     btn_name = "left"
                     if isinstance(btn_val, str):
