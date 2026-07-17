@@ -491,7 +491,7 @@ class ActionEditorModal(Toplevel):
     def __init__(self, parent, index, action, save_callback):
         super().__init__(parent)
         self.title(f"Node #{index+1} Editor - {action['type'].replace('_',' ').upper()}")
-        self.geometry("450x520")
+        self.geometry("450x570")
         self.resizable(False, False)
         self.configure(bg="#121214")
         self.transient(parent)
@@ -617,6 +617,20 @@ class ActionEditorModal(Toplevel):
                 dropdown_fg_color="#1e1f22"
             )
             behavior_menu.pack(fill="x", pady=(0, 10))
+            
+            # Click Target Position Dropdown
+            ctk.CTkLabel(main_frame, text="Click/Hover Target Position:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            self.click_pos_var = ctk.StringVar(value=action.get('click_position', 'Center'))
+            click_pos_menu = ctk.CTkOptionMenu(
+                main_frame,
+                values=["Center", "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right", "Random Corner"],
+                variable=self.click_pos_var,
+                fg_color="#2b2d31",
+                button_color="#2b2d31",
+                button_hover_color="#3d4047",
+                dropdown_fg_color="#1e1f22"
+            )
+            click_pos_menu.pack(fill="x", pady=(0, 10))
             
             # Show/hide initially
             if self.behavior_var.get() == "Press Key (Execute keystroke)":
@@ -752,6 +766,8 @@ class ActionEditorModal(Toplevel):
             beh = behavior_map_rev.get(self.behavior_var.get(), "wait")
             self.action['match_behavior'] = beh
             self.action['click_on_match'] = (beh in ("click", "press_key", "hover"))
+        if hasattr(self, 'click_pos_var'):
+            self.action['click_position'] = self.click_pos_var.get()
         if hasattr(self, 'cond_var'):
             self.action['is_conditional'] = (self.cond_var.get() == "on")
             
@@ -1779,8 +1795,36 @@ class MacroApp(ctk.CTk):
                     if matched and behavior != "wait":
                         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
                         h, w = template.shape[0], template.shape[1]
-                        tx = max_loc[0] + w // 2
-                        ty = max_loc[1] + h // 2
+                        pos_type = action.get('click_position', 'Center')
+                        if pos_type == 'Top-Left':
+                            tx = max_loc[0] + int(w * 0.15)
+                            ty = max_loc[1] + int(h * 0.15)
+                        elif pos_type == 'Top-Right':
+                            tx = max_loc[0] + int(w * 0.85)
+                            ty = max_loc[1] + int(h * 0.15)
+                        elif pos_type == 'Bottom-Left':
+                            tx = max_loc[0] + int(w * 0.15)
+                            ty = max_loc[1] + int(h * 0.85)
+                        elif pos_type == 'Bottom-Right':
+                            tx = max_loc[0] + int(w * 0.85)
+                            ty = max_loc[1] + int(h * 0.85)
+                        elif pos_type == 'Random Corner':
+                            corner = random.choice(['Top-Left', 'Top-Right', 'Bottom-Left', 'Bottom-Right'])
+                            if corner == 'Top-Left':
+                                tx = max_loc[0] + int(w * 0.15)
+                                ty = max_loc[1] + int(h * 0.15)
+                            elif corner == 'Top-Right':
+                                tx = max_loc[0] + int(w * 0.85)
+                                ty = max_loc[1] + int(h * 0.15)
+                            elif corner == 'Bottom-Left':
+                                tx = max_loc[0] + int(w * 0.15)
+                                ty = max_loc[1] + int(h * 0.85)
+                            else:
+                                tx = max_loc[0] + int(w * 0.85)
+                                ty = max_loc[1] + int(h * 0.85)
+                        else:  # Center
+                            tx = max_loc[0] + w // 2
+                            ty = max_loc[1] + h // 2
                         if self.fuzz_switch_var.get() == "on":
                             tx += random.randint(-2, 2)
                             ty += random.randint(-2, 2)
@@ -2515,8 +2559,12 @@ class MacroApp(ctk.CTk):
                 click_flag = f"Press [{kp.upper()}]"
             else:
                 click_flag = "Click" if action.get('click_on_match', False) else "Wait"
+            
+            pos = action.get('click_position', 'Center')
+            pos_suffix = f" ({pos})" if pos != 'Center' else ""
+            
             cond_flag = f" (Branch T➔{action.get('goto_true')} F➔{action.get('goto_false')})" if action.get('is_conditional', False) else ""
-            return f"📸 [{idx+1:02d}] Icon Match ➔ {click_flag} {os.path.basename(action['image_path'])}{cond_flag}"
+            return f"📸 [{idx+1:02d}] Icon Match ➔ {click_flag}{pos_suffix} {os.path.basename(action['image_path'])}{cond_flag}"
         if action['type'] == 'ocr_wait': return f"📝 [{idx+1:02d}] Wait for Text ➔ \"{action['text_query']}\""
         if action['type'] == 'ocr_click': return f"🔍 [{idx+1:02d}] OCR Click ➔ \"{action['text_query']}\""
         
