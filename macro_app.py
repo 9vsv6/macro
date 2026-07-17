@@ -269,6 +269,8 @@ def send_background_mouse_click(hwnd, button, x, y, is_release):
         
     PostMessageW = ctypes.windll.user32.PostMessageW
     if not is_release:
+        PostMessageW(target_hwnd, 0x0021, target_hwnd, (down_msg << 16) | 1) # WM_MOUSEACTIVATE
+        PostMessageW(target_hwnd, 0x0007, 0, 0) # WM_SETFOCUS
         PostMessageW(target_hwnd, down_msg, 0x0001 if button == "left" else (0x0002 if button == "right" else 0x0010), lParam)
     else:
         PostMessageW(target_hwnd, up_msg, 0, lParam)
@@ -288,6 +290,7 @@ def send_background_key(hwnd, vk, is_release):
     
     PostMessageW = ctypes.windll.user32.PostMessageW
     if not is_release:
+        PostMessageW(target_hwnd, 0x0007, 0, 0) # WM_SETFOCUS
         lParam = 1 | (scan << 16)
         PostMessageW(target_hwnd, WM_KEYDOWN, vk, lParam)
     else:
@@ -414,62 +417,6 @@ class CTKTooltip:
         if tw:
             tw.destroy()
 
-class AddActionOverlay(Toplevel):
-    def __init__(self, parent, callback):
-        super().__init__(parent)
-        self.parent = parent
-        self.callback = callback
-        self.attributes("-alpha", 0.35, "-fullscreen", True, "-topmost", True)
-        self.config(cursor="cross")
-        self.canvas = Canvas(self, cursor="cross", bg="black", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
-        
-        # Display instructions in the center of the screen
-        self.canvas.create_text(
-            self.winfo_screenwidth() // 2,
-            self.winfo_screenheight() // 2,
-            text="ADD MANUAL ACTION OVERLAY\n\n• Click anywhere to record a mouse click\n• Press any keyboard key to record keypress\n• Press ESC to cancel",
-            font=("Segoe UI", 16, "bold"),
-            fill="#a1a1aa",
-            justify="center"
-        )
-        
-        self.canvas.bind("<ButtonPress-1>", self.on_click)
-        self.bind("<KeyPress>", self.on_key_press)
-        self.focus_force()
-
-    def on_click(self, e):
-        x, y = e.x, e.y
-        self.withdraw()
-        self.update()
-        time.sleep(0.15)
-        self.destroy()
-        self.callback('mouse', {'x': x, 'y': y})
-
-    def on_key_press(self, e):
-        vk = e.keycode
-        keysym = e.keysym.upper()
-        
-        if keysym == "ESCAPE":
-            self.destroy()
-            if self.parent:
-                self.parent.deiconify()
-            return
-            
-        sym_map = {
-            "RETURN": "ENTER",
-            "SPACE": "SPACE",
-            "ESCAPE": "ESC",
-            "TAB": "TAB",
-            "BACKSPACE": "BACKSPACE"
-        }
-        name = sym_map.get(keysym, keysym)
-        
-        self.withdraw()
-        self.update()
-        time.sleep(0.15)
-        self.destroy()
-        self.callback('keyboard', {'vk': vk, 'name': name})
 
 class IconActionChoiceModal(Toplevel):
     def __init__(self, parent, on_select):
@@ -2497,12 +2444,88 @@ class MacroApp(ctk.CTk):
 
     def trigger_manual_action_choice_flow(self):
         if self.is_playing or self.is_recording: return
-        self.withdraw()
-        time.sleep(0.2)
-        AddActionOverlay(self, self.handle_manual_overlay_callback)
+        if getattr(self, 'is_listening_manual_action', False):
+            self.stop_manual_action_listener()
+            return
+            
+        self.is_listening_manual_action = True
+        self.add_manual_btn.configure(text="🔴 Click/Key anywhere...", fg_color="#ef4444")
+        
+        from pynput import mouse, keyboard
+        self.manual_mouse_listener = None
+        self.manual_key_listener = None
+        
+        def on_click(x, y, button, pressed):
+            if pressed:
+                app_x = self.winfo_rootx()
+                app_y = self.winfo_rooty()
+                app_w = self.winfo_width()
+                app_h = self.winfo_height()
+                if app_x <= x <= app_x + app_w and app_y <= y <= app_y + app_h:
+                    return True
+                
+                self.after(0, lambda: self.handle_manual_overlay_callback('mouse', {'x': x, 'y': y}))
+                self.after(0, self.stop_manual_action_listener)
+                return False
+                
+        def on_press(key):
+            vk = None
+            name = None
+            if hasattr(key, 'vk'):
+                vk = key.vk
+            elif hasattr(key, 'value') and hasattr(key.value, 'vk'):
+                vk = key.value.vk
+            
+            if hasattr(key, 'name'):
+                name = key.name.upper()
+            else:
+                try:
+                    name = key.char.upper()
+                except:
+                    name = str(key).upper()
+                    
+            if name == "ESC" or name == "ESCAPE":
+                self.after(0, self.stop_manual_action_listener)
+                return False
+                
+            sym_map = {
+                "RETURN": "ENTER",
+                "SPACE": "SPACE",
+                "ESCAPE": "ESC",
+                "TAB": "TAB",
+                "BACKSPACE": "BACKSPACE"
+            }
+            name = sym_map.get(name, name)
+            
+            if vk is None:
+                vk = get_vk_from_key_name(name)
+                
+            final_vk = vk
+            final_name = name
+            
+            self.after(0, lambda: self.handle_manual_overlay_callback('keyboard', {'vk': final_vk, 'name': final_name}))
+            self.after(0, self.stop_manual_action_listener)
+            return False
+
+        self.manual_mouse_listener = mouse.Listener(on_click=on_click)
+        self.manual_key_listener = keyboard.Listener(on_press=on_press)
+        
+        self.manual_mouse_listener.start()
+        self.manual_key_listener.start()
+
+    def stop_manual_action_listener(self):
+        self.is_listening_manual_action = False
+        self.add_manual_btn.configure(text="➕ Add Action", fg_color=ACCENT_BLUE)
+        if hasattr(self, 'manual_mouse_listener') and self.manual_mouse_listener:
+            try: self.manual_mouse_listener.stop()
+            except: pass
+            self.manual_mouse_listener = None
+        if hasattr(self, 'manual_key_listener') and self.manual_key_listener:
+            try: self.manual_key_listener.stop()
+            except: pass
+            self.manual_key_listener = None
 
     def handle_manual_overlay_callback(self, action_type, data):
-        self.deiconify()
         if action_type == 'mouse':
             x, y = data['x'], data['y']
             use_coords = (self.record_coords_switch_var.get() == "on")
