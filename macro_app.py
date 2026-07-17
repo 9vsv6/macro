@@ -2045,9 +2045,11 @@ class MacroApp(ctk.CTk):
                         if is_bg:
                             def do_bg_match():
                                 user32 = ctypes.windll.user32
-                                pt = POINT(int(tx), int(ty))
-                                user32.ClientToScreen(hwnd, ctypes.byref(pt))
-                                send_hardware_mouse_move(pt.x, pt.y)
+                                rect = RECT()
+                                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                                screen_x = rect.left + int(tx)
+                                screen_y = rect.top + int(ty)
+                                send_hardware_mouse_move(screen_x, screen_y)
                                 if behavior == "click":
                                     send_hardware_mouse_click("left", is_release=False)
                                     if self.fast_click_switch_var.get() != "on":
@@ -2221,9 +2223,11 @@ class MacroApp(ctk.CTk):
                         if is_bg:
                             def do_bg_ocr_click():
                                 user32 = ctypes.windll.user32
-                                pt = POINT(int(click_x), int(click_y))
-                                user32.ClientToScreen(hwnd, ctypes.byref(pt))
-                                send_hardware_mouse_move(pt.x, pt.y)
+                                rect = RECT()
+                                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                                screen_x = rect.left + int(click_x)
+                                screen_y = rect.top + int(click_y)
+                                send_hardware_mouse_move(screen_x, screen_y)
                                 send_hardware_mouse_click("left", is_release=False)
                                 if self.fast_click_switch_var.get() != "on":
                                     time.sleep(random.uniform(0.04, 0.07))
@@ -2273,9 +2277,11 @@ class MacroApp(ctk.CTk):
                         def do_bg_mouse():
                             user32 = ctypes.windll.user32
                             if tx is not None and ty is not None:
-                                pt = POINT(int(tx), int(ty))
-                                user32.ClientToScreen(hwnd, ctypes.byref(pt))
-                                send_hardware_mouse_move(pt.x, pt.y)
+                                rect = RECT()
+                                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                                screen_x = rect.left + int(tx)
+                                screen_y = rect.top + int(ty)
+                                send_hardware_mouse_move(screen_x, screen_y)
                             send_hardware_mouse_click(btn_name, is_release=False)
                             if self.fast_click_switch_var.get() != "on":
                                 time.sleep(random.uniform(0.04, 0.07))
