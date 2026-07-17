@@ -1471,8 +1471,7 @@ class MacroApp(ctk.CTk):
         ScreenSnipper(self, self.process_center_panel_sniped_trigger)
 
     def process_center_panel_sniped_trigger(self, x, y, w, h):
-        import pyautogui
-        captured_matrix = pyautogui.screenshot(region=(x, y, w, h))
+        captured_matrix = win32_screenshot((x, y, w, h))
         self.deiconify()
         os.makedirs("./assets", exist_ok=True)
         assigned_path = f"./assets/global_trigger_active.png"
@@ -1597,8 +1596,7 @@ class MacroApp(ctk.CTk):
         ScreenSnipper(self, self.process_sniped_bounding_box_assets)
 
     def process_sniped_bounding_box_assets(self, x, y, w, h):
-        import pyautogui
-        sniped_img = pyautogui.screenshot(region=(x, y, w, h))
+        sniped_img = win32_screenshot((x, y, w, h))
         self.deiconify()
         os.makedirs("./assets", exist_ok=True)
         asset_path = f"./assets/snippet_{int(time.time())}.png"
