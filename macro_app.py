@@ -89,7 +89,15 @@ def get_screen_pixel_color(x, y):
     ReleaseDC(0, hdc)
     return f"#{pixel & 0xFF:02x}{(pixel >> 8) & 0xFF:02x}{(pixel >> 16) & 0xFF:02x}".upper()
 
-# ── Humanized Path-Tracking Algorithms (Bézier Matrix) ────────────────────────
+def get_window_pixel_color(hwnd, x, y):
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    if not hwnd or not user32.IsWindow(hwnd):
+        return get_screen_pixel_color(x, y)
+    hdc = user32.GetWindowDC(hwnd)
+    pixel = gdi32.GetPixel(hdc, int(x), int(y))
+    user32.ReleaseDC(hwnd, hdc)
+    return f"#{pixel & 0xFF:02x}{(pixel >> 8) & 0xFF:02x}{(pixel >> 16) & 0xFF:02x}".upper()
 def send_hardware_mouse_move(target_x, target_y):
     user32 = ctypes.windll.user32
     sw = user32.GetSystemMetrics(0)
@@ -204,6 +212,123 @@ def win32_screenshot(region=None):
     
     img = Image.frombuffer("RGBA", (w, h), buffer, "raw", "BGRA", 0, 1)
     return img.convert("RGB")
+
+def send_background_mouse_click(hwnd, button, x, y, is_release):
+    if not hwnd: return
+    lParam = (int(y) << 16) | (int(x) & 0xFFFF)
+    
+    WM_LBUTTONDOWN = 0x0201
+    WM_LBUTTONUP = 0x0202
+    WM_RBUTTONDOWN = 0x0204
+    WM_RBUTTONUP = 0x0205
+    WM_MBUTTONDOWN = 0x0207
+    WM_MBUTTONUP = 0x0208
+    
+    down_msg = WM_LBUTTONDOWN
+    up_msg = WM_LBUTTONUP
+    if button == "right":
+        down_msg = WM_RBUTTONDOWN
+        up_msg = WM_RBUTTONUP
+    elif button == "middle":
+        down_msg = WM_MBUTTONDOWN
+        up_msg = WM_MBUTTONUP
+        
+    PostMessageW = ctypes.windll.user32.PostMessageW
+    if not is_release:
+        PostMessageW(hwnd, down_msg, 0x0001 if button == "left" else (0x0002 if button == "right" else 0x0010), lParam)
+    else:
+        PostMessageW(hwnd, up_msg, 0, lParam)
+
+def send_background_mouse_move(hwnd, x, y):
+    if not hwnd: return
+    lParam = (int(y) << 16) | (int(x) & 0xFFFF)
+    ctypes.windll.user32.PostMessageW(hwnd, 0x0200, 0, lParam) # WM_MOUSEMOVE = 0x0200
+
+def send_background_key(hwnd, vk, is_release):
+    if not hwnd: return
+    WM_KEYDOWN = 0x0100
+    WM_KEYUP = 0x0101
+    scan = VK_TO_SCAN.get(vk, 0)
+    
+    PostMessageW = ctypes.windll.user32.PostMessageW
+    if not is_release:
+        lParam = 1 | (scan << 16)
+        PostMessageW(hwnd, WM_KEYDOWN, vk, lParam)
+    else:
+        lParam = 1 | (scan << 16) | (1 << 30) | (1 << 31)
+        PostMessageW(hwnd, WM_KEYUP, vk, lParam)
+
+def win32_window_screenshot(hwnd, region=None):
+    from PIL import Image
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    
+    if not hwnd or not user32.IsWindow(hwnd):
+        return win32_screenshot(region)
+        
+    rect = RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return win32_screenshot(region)
+        
+    w = rect.right - rect.left
+    h = rect.bottom - rect.top
+    if w <= 0 or h <= 0:
+        return win32_screenshot(region)
+        
+    hwndDC = user32.GetWindowDC(hwnd)
+    mfcDC = gdi32.CreateCompatibleDC(hwndDC)
+    saveBitMap = gdi32.CreateCompatibleBitmap(hwndDC, w, h)
+    gdi32.SelectObject(mfcDC, saveBitMap)
+    
+    # PW_RENDERFULLCONTENT = 2
+    success = user32.PrintWindow(hwnd, mfcDC, 2)
+    if not success:
+        gdi32.BitBlt(mfcDC, 0, 0, w, h, hwndDC, 0, 0, 0x00CC0020)
+        
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ('biSize', ctypes.c_ulong),
+            ('biWidth', ctypes.c_long),
+            ('biHeight', ctypes.c_long),
+            ('biPlanes', ctypes.c_ushort),
+            ('biBitCount', ctypes.c_ushort),
+            ('biCompression', ctypes.c_ulong),
+            ('biSizeImage', ctypes.c_ulong),
+            ('biXPelsPerMeter', ctypes.c_long),
+            ('biYPelsPerMeter', ctypes.c_long),
+            ('biClrUsed', ctypes.c_ulong),
+            ('biClrImportant', ctypes.c_ulong)
+        ]
+        
+    bmi = BITMAPINFOHEADER()
+    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.biWidth = w
+    bmi.biHeight = -h
+    bmi.biPlanes = 1
+    bmi.biBitCount = 32
+    bmi.biCompression = 0
+    bmi.biSizeImage = w * h * 4
+    
+    buffer = ctypes.create_string_buffer(bmi.biSizeImage)
+    gdi32.GetDIBits(hwndDC, saveBitMap, 0, h, buffer, ctypes.byref(bmi), 0)
+    
+    gdi32.DeleteObject(saveBitMap)
+    gdi32.DeleteDC(mfcDC)
+    user32.ReleaseDC(hwnd, hwndDC)
+    
+    img = Image.frombuffer("RGBA", (w, h), buffer, "raw", "BGRA", 0, 1)
+    img = img.convert("RGB")
+    
+    if region:
+        rx, ry, rw, rh = region
+        # Ensure region lies within window bounds
+        rx = max(0, min(rx, w - 1))
+        ry = max(0, min(ry, h - 1))
+        rw = max(1, min(rw, w - rx))
+        rh = max(1, min(rh, h - ry))
+        return img.crop((rx, ry, rx + rw, ry + rh))
+        
+    return img
 
 def get_vk_from_key_name(key_name):
     key_map = {
@@ -794,6 +919,7 @@ class MacroApp(ctk.CTk):
         self.fast_click_switch_var = ctk.StringVar(value="off")
         self.record_coords_switch_var = ctk.StringVar(value="off")
         self.turbo_scan_switch_var = ctk.StringVar(value="on")
+        self.bg_mode_switch_var = ctk.StringVar(value="off")
         
         self.global_trigger_image_path = None
         self.global_text_trigger_text = ""
@@ -1047,6 +1173,7 @@ class MacroApp(ctk.CTk):
         ctk.CTkSwitch(hbb, text="Instant Clicks (Non-Human Fast Click)", font=ctk.CTkFont(size=12), variable=self.fast_click_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Record Mouse Coordinates (X/Y)", font=ctk.CTkFont(size=12), variable=self.record_coords_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Turbo Scan Mode (Super Fast Icons/Text)", font=ctk.CTkFont(size=12), variable=self.turbo_scan_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
+        ctk.CTkSwitch(hbb, text="Background Mode (Run in background window)", font=ctk.CTkFont(size=12), variable=self.bg_mode_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
 
         # ── Tab 3: Shortcut Drivers & Controller ──
         # System Hotkeys bind box
@@ -1684,19 +1811,29 @@ class MacroApp(ctk.CTk):
         loop_delay = max(0.0, float(self.loop_delay_entry.get())) if current_loop_mode in ("Loop", "Count") else 0.1
         
         loop_count = 0
+        is_bg = (self.bg_mode_switch_var.get() == "on" and self.recorded_target_hwnd is not None)
+        hwnd = self.recorded_target_hwnd if is_bg else None
+        
         is_turbo = (self.turbo_scan_switch_var.get() == "on")
-        if is_turbo:
-            get_screen = lambda reg=None: cv2.cvtColor(np.array(win32_screenshot(reg)), cv2.COLOR_RGB2BGR)
-            get_shot = lambda reg: win32_screenshot(reg)
-            img_sleep = 0.01
-            text_sleep = 0.05
-            pixel_sleep = 0.005
+        if is_bg:
+            get_screen = lambda reg=None: cv2.cvtColor(np.array(win32_window_screenshot(hwnd, reg)), cv2.COLOR_RGB2BGR)
+            get_shot = lambda reg: win32_window_screenshot(hwnd, reg)
+            img_sleep = 0.01 if is_turbo else 0.1
+            text_sleep = 0.05 if is_turbo else 0.2
+            pixel_sleep = 0.005 if is_turbo else 0.05
         else:
-            get_screen = lambda reg=None: cv2.cvtColor(np.array(pyautogui.screenshot(region=reg) if reg else pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
-            get_shot = lambda reg: pyautogui.screenshot(region=reg)
-            img_sleep = 0.1
-            text_sleep = 0.2
-            pixel_sleep = 0.05
+            if is_turbo:
+                get_screen = lambda reg=None: cv2.cvtColor(np.array(win32_screenshot(reg)), cv2.COLOR_RGB2BGR)
+                get_shot = lambda reg: win32_screenshot(reg)
+                img_sleep = 0.01
+                text_sleep = 0.05
+                pixel_sleep = 0.005
+            else:
+                get_screen = lambda reg=None: cv2.cvtColor(np.array(pyautogui.screenshot(region=reg) if reg else pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
+                get_shot = lambda reg: pyautogui.screenshot(region=reg)
+                img_sleep = 0.1
+                text_sleep = 0.2
+                pixel_sleep = 0.05
 
         self.hud_window = LiveHUD(self, "running", stop_callback=self.toggle_playback)
 
@@ -1828,65 +1965,87 @@ class MacroApp(ctk.CTk):
                         if self.fuzz_switch_var.get() == "on":
                             tx += random.randint(-2, 2)
                             ty += random.randint(-2, 2)
-                        if self.bezier_switch_var.get() == "on":
-                            sp = mouse_ctl.position
-                            human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
-                        else:
-                            send_hardware_mouse_move(tx, ty)
-                        
-                        if behavior == "hover":
-                            pass  # Hover only, no click or keypress!
-                        elif behavior == "press_key":
-                            kp = action.get('key_to_press')
-                            if kp:
-                                vk = get_vk_from_key_name(kp)
-                                if self.fast_click_switch_var.get() == "on":
+                        if is_bg:
+                            send_background_mouse_move(hwnd, tx, ty)
+                            if behavior == "click":
+                                send_background_mouse_click(hwnd, "left", tx, ty, is_release=False)
+                                if self.fast_click_switch_var.get() != "on":
+                                    time.sleep(random.uniform(0.04, 0.07))
+                                send_background_mouse_click(hwnd, "left", tx, ty, is_release=True)
+                            elif behavior == "press_key":
+                                kp = action.get('key_to_press')
+                                if kp:
+                                    vk = get_vk_from_key_name(kp)
                                     if vk is not None:
-                                        send_hardware_input(vk, is_release=False)
-                                        send_hardware_input(vk, is_release=True)
+                                        send_background_key(hwnd, vk, is_release=False)
+                                        if self.fast_click_switch_var.get() != "on":
+                                            time.sleep(random.uniform(0.04, 0.07))
+                                        send_background_key(hwnd, vk, is_release=True)
+                        else:
+                            if self.bezier_switch_var.get() == "on":
+                                sp = mouse_ctl.position
+                                human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
+                            else:
+                                send_hardware_mouse_move(tx, ty)
+                            
+                            if behavior == "hover":
+                                pass  # Hover only, no click or keypress!
+                            elif behavior == "press_key":
+                                kp = action.get('key_to_press')
+                                if kp:
+                                    vk = get_vk_from_key_name(kp)
+                                    if self.fast_click_switch_var.get() == "on":
+                                        if vk is not None:
+                                            send_hardware_input(vk, is_release=False)
+                                            send_hardware_input(vk, is_release=True)
+                                        else:
+                                            try:
+                                                kb_ctl = keyboard.Controller()
+                                                kb_ctl.press(kp.lower())
+                                                kb_ctl.release(kp.lower())
+                                            except:
+                                                pass
                                     else:
-                                        try:
-                                            kb_ctl = keyboard.Controller()
-                                            kb_ctl.press(kp.lower())
-                                            kb_ctl.release(kp.lower())
-                                        except:
-                                            pass
+                                        time.sleep(random.uniform(0.08, 0.12))
+                                        if vk is not None:
+                                            send_hardware_input(vk, is_release=False)
+                                            time.sleep(random.uniform(0.04, 0.07))
+                                            send_hardware_input(vk, is_release=True)
+                                        else:
+                                            try:
+                                                kb_ctl = keyboard.Controller()
+                                                kb_ctl.press(kp.lower())
+                                                time.sleep(random.uniform(0.04, 0.07))
+                                                kb_ctl.release(kp.lower())
+                                            except Exception as e:
+                                                print("Keyboard controller fallback error:", e)
+                            elif behavior == "click":
+                                if self.fast_click_switch_var.get() == "on":
+                                    send_hardware_mouse_click("left", is_release=False)
+                                    send_hardware_mouse_click("left", is_release=True)
                                 else:
                                     time.sleep(random.uniform(0.08, 0.12))
-                                    if vk is not None:
-                                        send_hardware_input(vk, is_release=False)
-                                        time.sleep(random.uniform(0.04, 0.07))
-                                        send_hardware_input(vk, is_release=True)
-                                    else:
-                                        try:
-                                            kb_ctl = keyboard.Controller()
-                                            kb_ctl.press(kp.lower())
-                                            time.sleep(random.uniform(0.04, 0.07))
-                                            kb_ctl.release(kp.lower())
-                                        except Exception as e:
-                                            print("Keyboard controller fallback error:", e)
-                        elif behavior == "click":
-                            if self.fast_click_switch_var.get() == "on":
-                                send_hardware_mouse_click("left", is_release=False)
-                                send_hardware_mouse_click("left", is_release=True)
-                            else:
-                                time.sleep(random.uniform(0.08, 0.12))
-                                send_hardware_mouse_click("left", is_release=False)
-                                time.sleep(random.uniform(0.04, 0.07))
-                                send_hardware_mouse_click("left", is_release=True)
+                                    send_hardware_mouse_click("left", is_release=False)
+                                    time.sleep(random.uniform(0.04, 0.07))
+                                    send_hardware_mouse_click("left", is_release=True)
 
                 elif action['type'] == 'pixel_wait':
-                    px, py = base_x + action['rel_x'], base_y + action['rel_y']
+                    if is_bg:
+                        px, py = action['rel_x'], action['rel_y']
+                        get_pixel = lambda x, y: get_window_pixel_color(hwnd, x, y)
+                    else:
+                        px, py = base_x + action['rel_x'], base_y + action['rel_y']
+                        get_pixel = lambda x, y: get_screen_pixel_color(x, y)
                     target_color = action['color'].upper()
                     matched = False
                     is_cond = action.get('is_conditional', False)
                     
                     if is_cond:
-                        if get_screen_pixel_color(px, py) == target_color:
+                        if get_pixel(px, py) == target_color:
                             matched = True
                     else:
-                        while self.is_playing and get_screen_pixel_color(px, py) != target_color:
-                            time.sleep(0.05)
+                        while self.is_playing and get_pixel(px, py) != target_color:
+                            time.sleep(pixel_sleep)
                         matched = True
                         
                     if is_cond:
@@ -1896,8 +2055,12 @@ class MacroApp(ctk.CTk):
 
                 elif action['type'] == 'ocr_wait':
                     rx, ry, rw, rh = action['region']
-                    tx = base_x + rx
-                    ty = base_y + ry
+                    if is_bg:
+                        tx = rx
+                        ty = ry
+                    else:
+                        tx = base_x + rx
+                        ty = base_y + ry
                     text_query = action.get('text_query', '').strip().lower()
                     matched = False
                     is_cond = action.get('is_conditional', False)
@@ -1932,8 +2095,12 @@ class MacroApp(ctk.CTk):
 
                 elif action['type'] == 'ocr_click':
                     rx, ry, rw, rh = action['region']
-                    tx = base_x + rx
-                    ty = base_y + ry
+                    if is_bg:
+                        tx = rx
+                        ty = ry
+                    else:
+                        tx = base_x + rx
+                        ty = base_y + ry
                     text_query = action.get('text_query', '').strip()
                     matched = False
                     is_cond = action.get('is_conditional', False)
@@ -1969,19 +2136,26 @@ class MacroApp(ctk.CTk):
                         if self.fuzz_switch_var.get() == "on":
                             click_x += random.randint(-2, 2)
                             click_y += random.randint(-2, 2)
-                        if self.bezier_switch_var.get() == "on":
-                            sp = mouse_ctl.position
-                            human_mouse_move(mouse_ctl, sp[0], sp[1], click_x, click_y)
+                        if is_bg:
+                            send_background_mouse_move(hwnd, click_x, click_y)
+                            send_background_mouse_click(hwnd, "left", click_x, click_y, is_release=False)
+                            if self.fast_click_switch_var.get() != "on":
+                                time.sleep(random.uniform(0.04, 0.07))
+                            send_background_mouse_click(hwnd, "left", click_x, click_y, is_release=True)
                         else:
-                            send_hardware_mouse_move(click_x, click_y)
-                        if self.fast_click_switch_var.get() == "on":
-                            send_hardware_mouse_click("left", is_release=False)
-                            send_hardware_mouse_click("left", is_release=True)
-                        else:
-                            time.sleep(random.uniform(0.08, 0.12))
-                            send_hardware_mouse_click("left", is_release=False)
-                            time.sleep(random.uniform(0.04, 0.07))
-                            send_hardware_mouse_click("left", is_release=True)
+                            if self.bezier_switch_var.get() == "on":
+                                sp = mouse_ctl.position
+                                human_mouse_move(mouse_ctl, sp[0], sp[1], click_x, click_y)
+                            else:
+                                send_hardware_mouse_move(click_x, click_y)
+                            if self.fast_click_switch_var.get() == "on":
+                                send_hardware_mouse_click("left", is_release=False)
+                                send_hardware_mouse_click("left", is_release=True)
+                            else:
+                                time.sleep(random.uniform(0.08, 0.12))
+                                send_hardware_mouse_click("left", is_release=False)
+                                time.sleep(random.uniform(0.04, 0.07))
+                                send_hardware_mouse_click("left", is_release=True)
                         
                     if is_cond:
                         goto_idx = action.get('goto_true') if matched else action.get('goto_false')
@@ -1990,16 +2164,16 @@ class MacroApp(ctk.CTk):
 
                 elif action['type'] == 'mouse':
                     use_coords = action.get('use_coords', True)
+                    tx, ty = None, None
                     if use_coords and action.get('rel_x') is not None:
-                        tx, ty = base_x + action['rel_x'], base_y + action['rel_y']
+                        if is_bg:
+                            tx, ty = action['rel_x'], action['rel_y']
+                        else:
+                            tx, ty = base_x + action['rel_x'], base_y + action['rel_y']
                         if self.fuzz_switch_var.get() == "on":
                             tx += random.randint(-2, 2)
                             ty += random.randint(-2, 2)
-                        if self.bezier_switch_var.get() == "on":
-                            sp = mouse_ctl.position
-                            human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
-                        else:
-                            send_hardware_mouse_move(tx, ty)
+                            
                     btn_val = action['details'][2]
                     btn_name = "left"
                     if isinstance(btn_val, str):
@@ -2007,27 +2181,50 @@ class MacroApp(ctk.CTk):
                             btn_name = "right"
                         elif 'middle' in btn_val.lower():
                             btn_name = "middle"
-                    
-                    if self.fast_click_switch_var.get() == "on":
-                        send_hardware_mouse_click(btn_name, is_release=False)
-                        send_hardware_mouse_click(btn_name, is_release=True)
+                            
+                    if is_bg:
+                        if tx is not None and ty is not None:
+                            send_background_mouse_move(hwnd, tx, ty)
+                        send_background_mouse_click(hwnd, btn_name, tx or 0, ty or 0, is_release=False)
+                        if self.fast_click_switch_var.get() != "on":
+                            time.sleep(random.uniform(0.04, 0.07))
+                        send_background_mouse_click(hwnd, btn_name, tx or 0, ty or 0, is_release=True)
                     else:
-                        time.sleep(random.uniform(0.08, 0.12))
-                        send_hardware_mouse_click(btn_name, is_release=False)
-                        time.sleep(random.uniform(0.04, 0.07))
-                        send_hardware_mouse_click(btn_name, is_release=True)
+                        if tx is not None and ty is not None:
+                            if self.bezier_switch_var.get() == "on":
+                                sp = mouse_ctl.position
+                                human_mouse_move(mouse_ctl, sp[0], sp[1], tx, ty)
+                            else:
+                                send_hardware_mouse_move(tx, ty)
+                        if self.fast_click_switch_var.get() == "on":
+                            send_hardware_mouse_click(btn_name, is_release=False)
+                            send_hardware_mouse_click(btn_name, is_release=True)
+                        else:
+                            time.sleep(random.uniform(0.08, 0.12))
+                            send_hardware_mouse_click(btn_name, is_release=False)
+                            time.sleep(random.uniform(0.04, 0.07))
+                            send_hardware_mouse_click(btn_name, is_release=True)
 
                 elif action['type'] == 'keyboard':
                     vk, rel = action.get('vk'), action.get('is_release', False)
                     if vk is not None:
                         repeats = action.get('repeat_count', 1)
-                        if not rel and repeats > 1:
-                            for _ in range(repeats):
-                                if not self.is_playing: break
-                                send_hardware_input(vk, is_release=False)
-                                time.sleep(0.02)
+                        if is_bg:
+                            if not rel and repeats > 1:
+                                for _ in range(repeats):
+                                    if not self.is_playing: break
+                                    send_background_key(hwnd, vk, is_release=False)
+                                    time.sleep(0.02)
+                            else:
+                                send_background_key(hwnd, vk, is_release=rel)
                         else:
-                            send_hardware_input(vk, is_release=rel)
+                            if not rel and repeats > 1:
+                                for _ in range(repeats):
+                                    if not self.is_playing: break
+                                    send_hardware_input(vk, is_release=False)
+                                    time.sleep(0.02)
+                            else:
+                                send_hardware_input(vk, is_release=rel)
 
                 elif action['type'] == 'controller':
                     pass 
@@ -2414,29 +2611,37 @@ class MacroApp(ctk.CTk):
 
     def check_global_text_trigger_match(self):
         import pyautogui
-        # Determine region
+        is_bg = (self.bg_mode_switch_var.get() == "on" and self.recorded_target_hwnd is not None)
+        hwnd = self.recorded_target_hwnd if is_bg else None
+
         if self.global_text_trigger_region:
             rx, ry, rw, rh = self.global_text_trigger_region
-            # Adjust to anchor window if active
-            base_x, base_y = 0, 0
-            if self.recorded_target_exe and self.recorded_target_exe != "Unknown Window":
-                for win_info in get_all_visible_windows_info():
-                    if win_info[1] == self.recorded_target_exe:
-                        rect = RECT()
-                        if GetWindowRect(win_info[0], ctypes.byref(rect)):
-                            base_x, base_y = rect.left, rect.top
-                        break
-            tx = base_x + rx
-            ty = base_y + ry
-            if self.turbo_scan_switch_var.get() == "on":
-                shot = win32_screenshot((tx, ty, rw, rh))
+            if is_bg:
+                shot = win32_window_screenshot(hwnd, (rx, ry, rw, rh))
+                tx, ty = rx, ry
             else:
-                shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                base_x, base_y = 0, 0
+                if self.recorded_target_exe and self.recorded_target_exe != "Unknown Window":
+                    for win_info in get_all_visible_windows_info():
+                        if win_info[1] == self.recorded_target_exe:
+                            rect = RECT()
+                            if GetWindowRect(win_info[0], ctypes.byref(rect)):
+                                base_x, base_y = rect.left, rect.top
+                            break
+                tx = base_x + rx
+                ty = base_y + ry
+                if self.turbo_scan_switch_var.get() == "on":
+                    shot = win32_screenshot((tx, ty, rw, rh))
+                else:
+                    shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
         else:
-            if self.turbo_scan_switch_var.get() == "on":
-                shot = win32_screenshot()
+            if is_bg:
+                shot = win32_window_screenshot(hwnd)
             else:
-                shot = pyautogui.screenshot()
+                if self.turbo_scan_switch_var.get() == "on":
+                    shot = win32_screenshot()
+                else:
+                    shot = pyautogui.screenshot()
             tx, ty = 0, 0
             
         os.makedirs("./assets", exist_ok=True)
