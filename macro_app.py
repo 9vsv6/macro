@@ -1173,7 +1173,43 @@ class MacroApp(ctk.CTk):
         ctk.CTkSwitch(hbb, text="Instant Clicks (Non-Human Fast Click)", font=ctk.CTkFont(size=12), variable=self.fast_click_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Record Mouse Coordinates (X/Y)", font=ctk.CTkFont(size=12), variable=self.record_coords_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
         ctk.CTkSwitch(hbb, text="Turbo Scan Mode (Super Fast Icons/Text)", font=ctk.CTkFont(size=12), variable=self.turbo_scan_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
-        ctk.CTkSwitch(hbb, text="Background Mode (Run in background window)", font=ctk.CTkFont(size=12), variable=self.bg_mode_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
+        self.bg_switch = ctk.CTkSwitch(
+            hbb, 
+            text="Background Mode (Run in background window)", 
+            font=ctk.CTkFont(size=12), 
+            variable=self.bg_mode_switch_var, 
+            onvalue="on", 
+            offvalue="off",
+            command=self.toggle_background_mode
+        )
+        self.bg_switch.pack(anchor="w", pady=3)
+        
+        self.bg_process_container = ctk.CTkFrame(hbb, fg_color="transparent")
+        
+        self.bg_process_var = ctk.StringVar(value="Select Background Window...")
+        self.bg_process_menu = ctk.CTkOptionMenu(
+            self.bg_process_container,
+            values=["Select Background Window..."],
+            variable=self.bg_process_var,
+            command=self.on_bg_process_selected,
+            fg_color="#2b2d31",
+            button_color="#2b2d31",
+            button_hover_color="#3d4047",
+            dropdown_fg_color="#1e1f22",
+            width=220
+        )
+        self.bg_process_menu.pack(side="left", padx=(0, 4))
+        
+        self.bg_process_refresh_btn = ctk.CTkButton(
+            self.bg_process_container,
+            text="🔄",
+            width=30,
+            height=28,
+            fg_color="#2b2d31",
+            hover_color="#3d4047",
+            command=self.refresh_bg_process_list
+        )
+        self.bg_process_refresh_btn.pack(side="left")
 
         # ── Tab 3: Shortcut Drivers & Controller ──
         # System Hotkeys bind box
@@ -1337,6 +1373,43 @@ class MacroApp(ctk.CTk):
         self.recorded_target_hwnd = None
         self.recorded_target_exe = "Unknown Window"
         self.anchor_status_lbl.configure(text="Anchor Window: Independent")
+
+    def toggle_background_mode(self):
+        if self.bg_mode_switch_var.get() == "on":
+            self.bg_process_container.pack(fill="x", padx=10, pady=4)
+            self.refresh_bg_process_list()
+        else:
+            self.bg_process_container.pack_forget()
+
+    def refresh_bg_process_list(self):
+        windows = get_all_visible_windows_info()
+        self.bg_window_map = {}
+        values = []
+        for hwnd, exe, title in windows:
+            display_name = f"{exe} - {title}"
+            self.bg_window_map[display_name] = (hwnd, exe)
+            values.append(display_name)
+            
+        if not values:
+            values = ["No active windows found"]
+            
+        self.bg_process_menu.configure(values=values)
+        
+        found = False
+        for disp, (h, e) in self.bg_window_map.items():
+            if h == self.recorded_target_hwnd:
+                self.bg_process_var.set(disp)
+                found = True
+                break
+        if not found:
+            self.bg_process_var.set("Select Background Window...")
+
+    def on_bg_process_selected(self, choice):
+        if hasattr(self, 'bg_window_map') and choice in self.bg_window_map:
+            hwnd, exe = self.bg_window_map[choice]
+            self.recorded_target_hwnd = hwnd
+            self.recorded_target_exe = exe
+            self.anchor_status_lbl.configure(text=f"Anchor Window: {exe}")
 
     def toggle_image_trigger_view(self):
         if self.img_trigger_switch_var.get() == "on":
