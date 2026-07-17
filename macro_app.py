@@ -102,26 +102,6 @@ def get_window_pixel_color(hwnd, x, y):
     user32.ReleaseDC(hwnd, hdc)
     return f"#{pixel & 0xFF:02x}{(pixel >> 8) & 0xFF:02x}{(pixel >> 16) & 0xFF:02x}".upper()
 
-def execute_background_input_with_focus(hwnd, input_action_fn):
-    user32 = ctypes.windll.user32
-    if not hwnd or not user32.IsWindow(hwnd):
-        input_action_fn()
-        return
-        
-    curr_fg = user32.GetForegroundWindow()
-    orig_pos = POINT()
-    user32.GetCursorPos(ctypes.byref(orig_pos))
-    
-    user32.ShowWindow(hwnd, 9) # SW_RESTORE = 9
-    user32.SetForegroundWindow(hwnd)
-    time.sleep(0.005)
-    
-    input_action_fn()
-    time.sleep(0.005)
-    
-    if curr_fg and curr_fg != hwnd:
-        user32.SetForegroundWindow(curr_fg)
-    user32.SetCursorPos(orig_pos.x, orig_pos.y)
 def send_hardware_mouse_move(target_x, target_y):
     user32 = ctypes.windll.user32
     sw = user32.GetSystemMetrics(0)
@@ -2043,28 +2023,21 @@ class MacroApp(ctk.CTk):
                             tx += random.randint(-2, 2)
                             ty += random.randint(-2, 2)
                         if is_bg:
-                            def do_bg_match():
-                                user32 = ctypes.windll.user32
-                                rect = RECT()
-                                user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                                screen_x = rect.left + int(tx)
-                                screen_y = rect.top + int(ty)
-                                send_hardware_mouse_move(screen_x, screen_y)
-                                if behavior == "click":
-                                    send_hardware_mouse_click("left", is_release=False)
-                                    if self.fast_click_switch_var.get() != "on":
-                                        time.sleep(random.uniform(0.04, 0.07))
-                                    send_hardware_mouse_click("left", is_release=True)
-                                elif behavior == "press_key":
-                                    kp = action.get('key_to_press')
-                                    if kp:
-                                        vk = get_vk_from_key_name(kp)
-                                        if vk is not None:
-                                            send_hardware_input(vk, is_release=False)
-                                            if self.fast_click_switch_var.get() != "on":
-                                                time.sleep(random.uniform(0.04, 0.07))
-                                            send_hardware_input(vk, is_release=True)
-                            execute_background_input_with_focus(hwnd, do_bg_match)
+                            send_background_mouse_move(hwnd, tx, ty)
+                            if behavior == "click":
+                                send_background_mouse_click(hwnd, "left", tx, ty, is_release=False)
+                                if self.fast_click_switch_var.get() != "on":
+                                    time.sleep(random.uniform(0.04, 0.07))
+                                send_background_mouse_click(hwnd, "left", tx, ty, is_release=True)
+                            elif behavior == "press_key":
+                                kp = action.get('key_to_press')
+                                if kp:
+                                    vk = get_vk_from_key_name(kp)
+                                    if vk is not None:
+                                        send_background_key(hwnd, vk, is_release=False)
+                                        if self.fast_click_switch_var.get() != "on":
+                                            time.sleep(random.uniform(0.04, 0.07))
+                                        send_background_key(hwnd, vk, is_release=True)
                         else:
                             if self.bezier_switch_var.get() == "on":
                                 sp = mouse_ctl.position
@@ -2221,18 +2194,11 @@ class MacroApp(ctk.CTk):
                             click_x += random.randint(-2, 2)
                             click_y += random.randint(-2, 2)
                         if is_bg:
-                            def do_bg_ocr_click():
-                                user32 = ctypes.windll.user32
-                                rect = RECT()
-                                user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                                screen_x = rect.left + int(click_x)
-                                screen_y = rect.top + int(click_y)
-                                send_hardware_mouse_move(screen_x, screen_y)
-                                send_hardware_mouse_click("left", is_release=False)
-                                if self.fast_click_switch_var.get() != "on":
-                                    time.sleep(random.uniform(0.04, 0.07))
-                                send_hardware_mouse_click("left", is_release=True)
-                            execute_background_input_with_focus(hwnd, do_bg_ocr_click)
+                            send_background_mouse_move(hwnd, click_x, click_y)
+                            send_background_mouse_click(hwnd, "left", click_x, click_y, is_release=False)
+                            if self.fast_click_switch_var.get() != "on":
+                                time.sleep(random.uniform(0.04, 0.07))
+                            send_background_mouse_click(hwnd, "left", click_x, click_y, is_release=True)
                         else:
                             if self.bezier_switch_var.get() == "on":
                                 sp = mouse_ctl.position
@@ -2274,19 +2240,12 @@ class MacroApp(ctk.CTk):
                             btn_name = "middle"
                             
                     if is_bg:
-                        def do_bg_mouse():
-                            user32 = ctypes.windll.user32
-                            if tx is not None and ty is not None:
-                                rect = RECT()
-                                user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                                screen_x = rect.left + int(tx)
-                                screen_y = rect.top + int(ty)
-                                send_hardware_mouse_move(screen_x, screen_y)
-                            send_hardware_mouse_click(btn_name, is_release=False)
-                            if self.fast_click_switch_var.get() != "on":
-                                time.sleep(random.uniform(0.04, 0.07))
-                            send_hardware_mouse_click(btn_name, is_release=True)
-                        execute_background_input_with_focus(hwnd, do_bg_mouse)
+                        if tx is not None and ty is not None:
+                            send_background_mouse_move(hwnd, tx, ty)
+                        send_background_mouse_click(hwnd, btn_name, tx or 0, ty or 0, is_release=False)
+                        if self.fast_click_switch_var.get() != "on":
+                            time.sleep(random.uniform(0.04, 0.07))
+                        send_background_mouse_click(hwnd, btn_name, tx or 0, ty or 0, is_release=True)
                     else:
                         if tx is not None and ty is not None:
                             if self.bezier_switch_var.get() == "on":
@@ -2308,15 +2267,13 @@ class MacroApp(ctk.CTk):
                     if vk is not None:
                         repeats = action.get('repeat_count', 1)
                         if is_bg:
-                            def do_bg_key():
-                                if not rel and repeats > 1:
-                                    for _ in range(repeats):
-                                        if not self.is_playing: break
-                                        send_hardware_input(vk, is_release=False)
-                                        time.sleep(0.02)
-                                else:
-                                    send_hardware_input(vk, is_release=rel)
-                            execute_background_input_with_focus(hwnd, do_bg_key)
+                            if not rel and repeats > 1:
+                                for _ in range(repeats):
+                                    if not self.is_playing: break
+                                    send_background_key(hwnd, vk, is_release=False)
+                                    time.sleep(0.02)
+                            else:
+                                send_background_key(hwnd, vk, is_release=rel)
                         else:
                             if not rel and repeats > 1:
                                 for _ in range(repeats):
