@@ -54,6 +54,9 @@ PROCESS_VM_READ = 0x0010
 class RECT(ctypes.Structure):
     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
 
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
 def get_exe_from_hwnd(hwnd):
     pid = ctypes.c_ulong()
     GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -213,9 +216,40 @@ def win32_screenshot(region=None):
     img = Image.frombuffer("RGBA", (w, h), buffer, "raw", "BGRA", 0, 1)
     return img.convert("RGB")
 
+def get_input_target_hwnd(parent_hwnd, x, y):
+    user32 = ctypes.windll.user32
+    if not parent_hwnd or not user32.IsWindow(parent_hwnd):
+        return parent_hwnd, x, y
+        
+    point = POINT(int(x), int(y))
+    child = user32.ChildWindowFromPointEx(parent_hwnd, point, 0) # CWP_ALL = 0
+    if child and child != parent_hwnd and user32.IsWindowVisible(child):
+        rect = RECT()
+        user32.GetWindowRect(child, ctypes.byref(rect))
+        pt = POINT(rect.left, rect.top)
+        user32.ScreenToClient(parent_hwnd, ctypes.byref(pt))
+        rx = x - pt.x
+        ry = y - pt.y
+        nested, nx, ny = get_input_target_hwnd(child, rx, ry)
+        return nested, nx, ny
+        
+    return parent_hwnd, x, y
+
+def get_keyboard_target_hwnd(parent_hwnd):
+    user32 = ctypes.windll.user32
+    if not parent_hwnd:
+        return None
+    rect = RECT()
+    user32.GetClientRect(parent_hwnd, ctypes.byref(rect))
+    cx = (rect.right - rect.left) // 2
+    cy = (rect.bottom - rect.top) // 2
+    target_hwnd, _, _ = get_input_target_hwnd(parent_hwnd, cx, cy)
+    return target_hwnd
+
 def send_background_mouse_click(hwnd, button, x, y, is_release):
     if not hwnd: return
-    lParam = (int(y) << 16) | (int(x) & 0xFFFF)
+    target_hwnd, tx, ty = get_input_target_hwnd(hwnd, x, y)
+    lParam = (int(ty) << 16) | (int(tx) & 0xFFFF)
     
     WM_LBUTTONDOWN = 0x0201
     WM_LBUTTONUP = 0x0202
@@ -235,17 +269,19 @@ def send_background_mouse_click(hwnd, button, x, y, is_release):
         
     PostMessageW = ctypes.windll.user32.PostMessageW
     if not is_release:
-        PostMessageW(hwnd, down_msg, 0x0001 if button == "left" else (0x0002 if button == "right" else 0x0010), lParam)
+        PostMessageW(target_hwnd, down_msg, 0x0001 if button == "left" else (0x0002 if button == "right" else 0x0010), lParam)
     else:
-        PostMessageW(hwnd, up_msg, 0, lParam)
+        PostMessageW(target_hwnd, up_msg, 0, lParam)
 
 def send_background_mouse_move(hwnd, x, y):
     if not hwnd: return
-    lParam = (int(y) << 16) | (int(x) & 0xFFFF)
-    ctypes.windll.user32.PostMessageW(hwnd, 0x0200, 0, lParam) # WM_MOUSEMOVE = 0x0200
+    target_hwnd, tx, ty = get_input_target_hwnd(hwnd, x, y)
+    lParam = (int(ty) << 16) | (int(tx) & 0xFFFF)
+    ctypes.windll.user32.PostMessageW(target_hwnd, 0x0200, 0, lParam) # WM_MOUSEMOVE = 0x0200
 
 def send_background_key(hwnd, vk, is_release):
     if not hwnd: return
+    target_hwnd = get_keyboard_target_hwnd(hwnd) or hwnd
     WM_KEYDOWN = 0x0100
     WM_KEYUP = 0x0101
     scan = VK_TO_SCAN.get(vk, 0)
@@ -253,10 +289,10 @@ def send_background_key(hwnd, vk, is_release):
     PostMessageW = ctypes.windll.user32.PostMessageW
     if not is_release:
         lParam = 1 | (scan << 16)
-        PostMessageW(hwnd, WM_KEYDOWN, vk, lParam)
+        PostMessageW(target_hwnd, WM_KEYDOWN, vk, lParam)
     else:
         lParam = 1 | (scan << 16) | (1 << 30) | (1 << 31)
-        PostMessageW(hwnd, WM_KEYUP, vk, lParam)
+        PostMessageW(target_hwnd, WM_KEYUP, vk, lParam)
 
 def win32_window_screenshot(hwnd, region=None):
     from PIL import Image
@@ -280,7 +316,6 @@ def win32_window_screenshot(hwnd, region=None):
     saveBitMap = gdi32.CreateCompatibleBitmap(hwndDC, w, h)
     gdi32.SelectObject(mfcDC, saveBitMap)
     
-    # PW_RENDERFULLCONTENT = 2
     success = user32.PrintWindow(hwnd, mfcDC, 2)
     if not success:
         gdi32.BitBlt(mfcDC, 0, 0, w, h, hwndDC, 0, 0, 0x00CC0020)
@@ -310,7 +345,7 @@ def win32_window_screenshot(hwnd, region=None):
     bmi.biSizeImage = w * h * 4
     
     buffer = ctypes.create_string_buffer(bmi.biSizeImage)
-    gdi32.GetDIBits(hwndDC, saveBitMap, 0, h, buffer, ctypes.byref(bmi), 0)
+    gdi32.GetDIBits(mfcDC, saveBitMap, 0, h, buffer, ctypes.byref(bmi), 0)
     
     gdi32.DeleteObject(saveBitMap)
     gdi32.DeleteDC(mfcDC)
@@ -319,9 +354,12 @@ def win32_window_screenshot(hwnd, region=None):
     img = Image.frombuffer("RGBA", (w, h), buffer, "raw", "BGRA", 0, 1)
     img = img.convert("RGB")
     
+    extrema = img.convert("L").getextrema()
+    if extrema == (0, 0) or extrema is None:
+        img = win32_screenshot((rect.left, rect.top, w, h))
+        
     if region:
         rx, ry, rw, rh = region
-        # Ensure region lies within window bounds
         rx = max(0, min(rx, w - 1))
         ry = max(0, min(ry, h - 1))
         rw = max(1, min(rw, w - rx))
