@@ -316,6 +316,59 @@ def get_vk_from_key_name(key_name):
         return ord(k_upper)
     return None
 
+def send_background_mouse_move(hwnd, x, y):
+    if not hwnd or not ctypes.windll.user32.IsWindow(hwnd):
+        send_hardware_mouse_move(x, y)
+        return
+    lparam = (int(y) << 16) | (int(x) & 0xFFFF)
+    ctypes.windll.user32.PostMessageW(hwnd, 0x0200, 0, lparam)
+
+def send_background_mouse_click(hwnd, button="left", x=0, y=0, is_release=False):
+    if not hwnd or not ctypes.windll.user32.IsWindow(hwnd):
+        send_hardware_mouse_click(button, is_release)
+        return
+    lparam = (int(y) << 16) | (int(x) & 0xFFFF)
+    btn = button.lower()
+    if "right" in btn:
+        msg = 0x0205 if is_release else 0x0204
+        wparam = 0 if is_release else 0x0002
+    elif "middle" in btn:
+        msg = 0x0208 if is_release else 0x0207
+        wparam = 0 if is_release else 0x0010
+    else:
+        msg = 0x0202 if is_release else 0x0201
+        wparam = 0 if is_release else 0x0001
+    ctypes.windll.user32.PostMessageW(hwnd, msg, wparam, lparam)
+
+def send_background_key(hwnd, vk_code, is_release=False):
+    if not hwnd or not ctypes.windll.user32.IsWindow(hwnd):
+        send_hardware_input(vk_code, is_release)
+        return
+    scan = VK_TO_SCAN.get(vk_code, 0)
+    lparam = (scan << 16) | 1
+    if is_release:
+        lparam |= (1 << 30) | (1 << 31)
+        msg = 0x0101
+    else:
+        msg = 0x0100
+    ctypes.windll.user32.PostMessageW(hwnd, msg, vk_code, lparam)
+
+def execute_background_input_with_focus(hwnd, callback_fn):
+    if not hwnd or not ctypes.windll.user32.IsWindow(hwnd):
+        callback_fn()
+        return
+    user32 = ctypes.windll.user32
+    fg = user32.GetForegroundWindow()
+    if fg != hwnd:
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.04)
+    try:
+        callback_fn()
+    finally:
+        if fg and fg != hwnd and user32.IsWindow(fg):
+            time.sleep(0.04)
+            user32.SetForegroundWindow(fg)
+
 class CTKTooltip:
     def __init__(self, widget, text):
         self.widget = widget
