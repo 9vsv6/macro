@@ -20,6 +20,91 @@ try:
 except ImportError:
     HAS_PYGAME = False
 
+import cv2
+import numpy as np
+
+def match_template_enhanced(screen, template, confidence=0.85, match_engine="standard", auto_fallback=True):
+    """
+    Advanced multi-engine template matching with support for obscured, covered,
+    or partially hidden icons (e.g. badges, text overlays, shifting grass/bg).
+    """
+    if screen is None or template is None:
+        return False, 0.0, (0, 0)
+    
+    sh, sw = screen.shape[:2]
+    th, tw = template.shape[:2]
+    if th > sh or tw > sw:
+        return False, 0.0, (0, 0)
+        
+    try:
+        if match_engine == "grayscale":
+            g_screen = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+            g_template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+            res = cv2.matchTemplate(g_screen, g_template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+            if max_val >= confidence:
+                return True, max_val, max_loc
+
+        elif match_engine in ("circle_mask", "ignore_background"):
+            mask = np.zeros((th, tw), dtype=np.uint8)
+            cv2.ellipse(mask, (tw // 2, th // 2), (max(1, int(tw * 0.45)), max(1, int(th * 0.45))), 0, 0, 360, 255, -1)
+            try:
+                res = cv2.matchTemplate(screen, template, cv2.TM_CCORR_NORMED, mask=mask)
+            except Exception:
+                masked_template = cv2.bitwise_and(template, template, mask=mask)
+                res = cv2.matchTemplate(screen, masked_template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+            if max_val >= confidence:
+                return True, max_val, max_loc
+
+        elif match_engine in ("hsv_color", "dominant_color"):
+            hsv_tpl = cv2.cvtColor(template, cv2.COLOR_BGR2HSV)
+            ch, cw = max(1, th // 4), max(1, tw // 4)
+            center_hsv = hsv_tpl[ch:th-ch, cw:tw-cw]
+            mean_hsv = np.mean(center_hsv, axis=(0, 1))
+            
+            lower_hsv = np.array([max(0, int(mean_hsv[0]) - 25), max(30, int(mean_hsv[1]) - 80), max(30, int(mean_hsv[2]) - 80)], dtype=np.uint8)
+            upper_hsv = np.array([min(179, int(mean_hsv[0]) + 25), min(255, int(mean_hsv[1]) + 80), min(255, int(mean_hsv[2]) + 80)], dtype=np.uint8)
+            
+            hsv_screen = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+            color_mask_screen = cv2.inRange(hsv_screen, lower_hsv, upper_hsv)
+            color_mask_tpl = cv2.inRange(hsv_tpl, lower_hsv, upper_hsv)
+            
+            res = cv2.matchTemplate(color_mask_screen, color_mask_tpl, cv2.TM_CCORR_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+            target_conf = max(0.40, confidence - 0.15)
+            if max_val >= target_conf:
+                return True, max_val, max_loc
+
+        # Default standard BGR match
+        res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+        if max_val >= confidence:
+            return True, max_val, max_loc
+
+        # Auto fallback for obscured icons if auto_fallback is active
+        if auto_fallback:
+            # 1. Circular Mask with 0.60 threshold
+            mask = np.zeros((th, tw), dtype=np.uint8)
+            cv2.ellipse(mask, (tw // 2, th // 2), (max(1, int(tw * 0.42)), max(1, int(th * 0.42))), 0, 0, 360, 255, -1)
+            try:
+                res_m = cv2.matchTemplate(screen, template, cv2.TM_CCORR_NORMED, mask=mask)
+                _, max_val_m, _, max_loc_m = cv2.minMaxLoc(res_m)
+                if max_val_m >= min(0.60, confidence):
+                    return True, max_val_m, max_loc_m
+            except Exception:
+                pass
+
+            # 2. Lower threshold tolerance (0.55) if icon is partially covered by badges or text
+            if max_val >= 0.55:
+                return True, max_val, max_loc
+
+        return False, max_val, max_loc
+    except Exception as e:
+        print(f"Match Template Error: {e}")
+        return False, 0.0, (0, 0)
+
+
 # Enhanced Premium Color Palette
 APP_BG = "#191919"          
 PANEL_BG = "#202020"        
@@ -217,160 +302,6 @@ def win32_screenshot(region=None):
     img = Image.frombuffer("RGBA", (w, h), buffer, "raw", "BGRA", 0, 1)
     return img.convert("RGB")
 
-def get_input_target_hwnd(parent_hwnd, x, y):
-    user32 = ctypes.windll.user32
-    if not parent_hwnd or not user32.IsWindow(parent_hwnd):
-        return parent_hwnd, x, y
-        
-    point = POINT(int(x), int(y))
-    child = user32.ChildWindowFromPointEx(parent_hwnd, point, 0) # CWP_ALL = 0
-    if child and child != parent_hwnd and user32.IsWindowVisible(child):
-        rect = RECT()
-        user32.GetWindowRect(child, ctypes.byref(rect))
-        pt = POINT(rect.left, rect.top)
-        user32.ScreenToClient(parent_hwnd, ctypes.byref(pt))
-        rx = x - pt.x
-        ry = y - pt.y
-        nested, nx, ny = get_input_target_hwnd(child, rx, ry)
-        return nested, nx, ny
-        
-    return parent_hwnd, x, y
-
-def get_keyboard_target_hwnd(parent_hwnd):
-    user32 = ctypes.windll.user32
-    if not parent_hwnd:
-        return None
-    rect = RECT()
-    user32.GetClientRect(parent_hwnd, ctypes.byref(rect))
-    cx = (rect.right - rect.left) // 2
-    cy = (rect.bottom - rect.top) // 2
-    target_hwnd, _, _ = get_input_target_hwnd(parent_hwnd, cx, cy)
-    return target_hwnd
-
-def send_background_mouse_click(hwnd, button, x, y, is_release):
-    if not hwnd: return
-    target_hwnd, tx, ty = get_input_target_hwnd(hwnd, x, y)
-    lParam = (int(ty) << 16) | (int(tx) & 0xFFFF)
-    
-    WM_LBUTTONDOWN = 0x0201
-    WM_LBUTTONUP = 0x0202
-    WM_RBUTTONDOWN = 0x0204
-    WM_RBUTTONUP = 0x0205
-    WM_MBUTTONDOWN = 0x0207
-    WM_MBUTTONUP = 0x0208
-    
-    down_msg = WM_LBUTTONDOWN
-    up_msg = WM_LBUTTONUP
-    if button == "right":
-        down_msg = WM_RBUTTONDOWN
-        up_msg = WM_RBUTTONUP
-    elif button == "middle":
-        down_msg = WM_MBUTTONDOWN
-        up_msg = WM_MBUTTONUP
-        
-    PostMessageW = ctypes.windll.user32.PostMessageW
-    if not is_release:
-        PostMessageW(target_hwnd, 0x0021, target_hwnd, (down_msg << 16) | 1) # WM_MOUSEACTIVATE
-        PostMessageW(target_hwnd, 0x0007, 0, 0) # WM_SETFOCUS
-        PostMessageW(target_hwnd, down_msg, 0x0001 if button == "left" else (0x0002 if button == "right" else 0x0010), lParam)
-    else:
-        PostMessageW(target_hwnd, up_msg, 0, lParam)
-
-def send_background_mouse_move(hwnd, x, y):
-    if not hwnd: return
-    target_hwnd, tx, ty = get_input_target_hwnd(hwnd, x, y)
-    lParam = (int(ty) << 16) | (int(tx) & 0xFFFF)
-    ctypes.windll.user32.PostMessageW(target_hwnd, 0x0200, 0, lParam) # WM_MOUSEMOVE = 0x0200
-
-def send_background_key(hwnd, vk, is_release):
-    if not hwnd: return
-    target_hwnd = get_keyboard_target_hwnd(hwnd) or hwnd
-    WM_KEYDOWN = 0x0100
-    WM_KEYUP = 0x0101
-    scan = VK_TO_SCAN.get(vk, 0)
-    
-    PostMessageW = ctypes.windll.user32.PostMessageW
-    if not is_release:
-        PostMessageW(target_hwnd, 0x0007, 0, 0) # WM_SETFOCUS
-        lParam = 1 | (scan << 16)
-        PostMessageW(target_hwnd, WM_KEYDOWN, vk, lParam)
-    else:
-        lParam = 1 | (scan << 16) | (1 << 30) | (1 << 31)
-        PostMessageW(target_hwnd, WM_KEYUP, vk, lParam)
-
-def win32_window_screenshot(hwnd, region=None):
-    from PIL import Image
-    user32 = ctypes.windll.user32
-    gdi32 = ctypes.windll.gdi32
-    
-    if not hwnd or not user32.IsWindow(hwnd):
-        return win32_screenshot(region)
-        
-    rect = RECT()
-    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-        return win32_screenshot(region)
-        
-    w = rect.right - rect.left
-    h = rect.bottom - rect.top
-    if w <= 0 or h <= 0:
-        return win32_screenshot(region)
-        
-    hwndDC = user32.GetWindowDC(hwnd)
-    mfcDC = gdi32.CreateCompatibleDC(hwndDC)
-    saveBitMap = gdi32.CreateCompatibleBitmap(hwndDC, w, h)
-    gdi32.SelectObject(mfcDC, saveBitMap)
-    
-    success = user32.PrintWindow(hwnd, mfcDC, 2)
-    if not success:
-        gdi32.BitBlt(mfcDC, 0, 0, w, h, hwndDC, 0, 0, 0x00CC0020)
-        
-    class BITMAPINFOHEADER(ctypes.Structure):
-        _fields_ = [
-            ('biSize', ctypes.c_ulong),
-            ('biWidth', ctypes.c_long),
-            ('biHeight', ctypes.c_long),
-            ('biPlanes', ctypes.c_ushort),
-            ('biBitCount', ctypes.c_ushort),
-            ('biCompression', ctypes.c_ulong),
-            ('biSizeImage', ctypes.c_ulong),
-            ('biXPelsPerMeter', ctypes.c_long),
-            ('biYPelsPerMeter', ctypes.c_long),
-            ('biClrUsed', ctypes.c_ulong),
-            ('biClrImportant', ctypes.c_ulong)
-        ]
-        
-    bmi = BITMAPINFOHEADER()
-    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-    bmi.biWidth = w
-    bmi.biHeight = -h
-    bmi.biPlanes = 1
-    bmi.biBitCount = 32
-    bmi.biCompression = 0
-    bmi.biSizeImage = w * h * 4
-    
-    buffer = ctypes.create_string_buffer(bmi.biSizeImage)
-    gdi32.GetDIBits(mfcDC, saveBitMap, 0, h, buffer, ctypes.byref(bmi), 0)
-    
-    gdi32.DeleteObject(saveBitMap)
-    gdi32.DeleteDC(mfcDC)
-    user32.ReleaseDC(hwnd, hwndDC)
-    
-    img = Image.frombuffer("RGBA", (w, h), buffer, "raw", "BGRA", 0, 1)
-    img = img.convert("RGB")
-    
-    extrema = img.convert("L").getextrema()
-    if extrema == (0, 0) or extrema is None:
-        img = win32_screenshot((rect.left, rect.top, w, h))
-        
-    if region:
-        rx, ry, rw, rh = region
-        rx = max(0, min(rx, w - 1))
-        ry = max(0, min(ry, h - 1))
-        rw = max(1, min(rw, w - rx))
-        rh = max(1, min(rh, h - ry))
-        return img.crop((rx, ry, rx + rw, ry + rh))
-        
-    return img
 
 def get_vk_from_key_name(key_name):
     key_map = {
@@ -420,12 +351,15 @@ class CTKTooltip:
 
 
 class IconActionChoiceModal(Toplevel):
-    def __init__(self, parent, on_select):
+    def __init__(self, parent, on_select, image_path=None):
         super().__init__(parent)
         self.parent = parent
         self.on_select = on_select
-        self.title("Action on Match")
-        self.geometry("380x150")
+        self.image_path = image_path
+        self.title("Icon Detection Settings & Action")
+        
+        has_preview = bool(image_path and os.path.exists(image_path))
+        self.geometry("420x430" if has_preview else "420x330")
         self.resizable(False, False)
         self.configure(bg="#09090b")
         self.attributes("-topmost", True)
@@ -433,30 +367,56 @@ class IconActionChoiceModal(Toplevel):
         self.grab_set()
         
         self.update_idletasks()
-        px = parent.winfo_x() + (parent.winfo_width() // 2) - 190
-        py = parent.winfo_y() + (parent.winfo_height() // 2) - 75
+        px = parent.winfo_x() + (parent.winfo_width() // 2) - 210
+        py = parent.winfo_y() + (parent.winfo_height() // 2) - (215 if has_preview else 165)
         self.geometry(f"+{px}+{py}")
         
         frame = ctk.CTkFrame(self, fg_color="#09090b")
         frame.pack(fill="both", expand=True, padx=15, pady=15)
         
-        lbl = ctk.CTkLabel(frame, text="Select behavior when icon is matched on screen:", font=ctk.CTkFont(size=12, weight="bold"), text_color="#f4f4f5")
-        lbl.pack(pady=(0, 15))
+        if has_preview:
+            try:
+                from PIL import Image
+                img = Image.open(image_path)
+                img.thumbnail((160, 70))
+                ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(img.width, img.height))
+                
+                preview_card = ctk.CTkFrame(frame, fg_color="#121214", border_color="#2b2d31", border_width=1, corner_radius=8)
+                preview_card.pack(fill="x", pady=(0, 10))
+                
+                ctk.CTkLabel(preview_card, text="📸 Target Sniped Icon Target:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#a1a1aa").pack(anchor="w", padx=10, pady=(4, 2))
+                
+                img_lbl = ctk.CTkLabel(preview_card, image=ctk_img, text="")
+                img_lbl.image = ctk_img
+                img_lbl.pack(pady=(2, 6))
+            except Exception as e:
+                print(f"Modal image preview error: {e}")
+        
+        lbl = ctk.CTkLabel(frame, text="Select Behavior on Icon Match:", font=ctk.CTkFont(size=12, weight="bold"), text_color="#f4f4f5")
+        lbl.pack(anchor="w", pady=(0, 6))
         
         btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.pack(fill="x")
+        btn_frame.pack(fill="x", pady=(0, 12))
         
+        self.choice = "click"
+        
+        def set_choice(c):
+            self.choice = c
+            click_btn.configure(fg_color="#7c3aed" if c == 'click' else "#2b2d31")
+            hover_btn.configure(fg_color="#7c3aed" if c == 'hover' else "#2b2d31")
+            key_btn.configure(fg_color="#7c3aed" if c == 'press_key' else "#2b2d31")
+            
         click_btn = ctk.CTkButton(
             btn_frame, 
             text="🖱️ Left Click", 
-            fg_color="#2b2d31", 
-            hover_color="#3d4047", 
+            fg_color="#7c3aed", 
+            hover_color="#6d28d9", 
             text_color="#f4f4f5",
             font=ctk.CTkFont(size=11, weight="bold"),
-            width=100,
-            command=lambda: self.select('click')
+            width=110,
+            command=lambda: set_choice('click')
         )
-        click_btn.pack(side="left", padx=3, expand=True)
+        click_btn.pack(side="left", padx=2, expand=True)
         
         hover_btn = ctk.CTkButton(
             btn_frame, 
@@ -465,10 +425,10 @@ class IconActionChoiceModal(Toplevel):
             hover_color="#3d4047", 
             text_color="#f4f4f5",
             font=ctk.CTkFont(size=11, weight="bold"),
-            width=100,
-            command=lambda: self.select('hover')
+            width=110,
+            command=lambda: set_choice('hover')
         )
-        hover_btn.pack(side="left", padx=3, expand=True)
+        hover_btn.pack(side="left", padx=2, expand=True)
         
         key_btn = ctk.CTkButton(
             btn_frame, 
@@ -477,45 +437,338 @@ class IconActionChoiceModal(Toplevel):
             hover_color="#3d4047", 
             text_color="#f4f4f5",
             font=ctk.CTkFont(size=11, weight="bold"),
-            width=100,
-            command=lambda: self.select('press_key')
+            width=110,
+            command=lambda: set_choice('press_key')
         )
-        key_btn.pack(side="left", padx=3, expand=True)
+        key_btn.pack(side="left", padx=2, expand=True)
         
-    def select(self, choice):
+        # Obscured / Tolerance Level Option
+        ctk.CTkLabel(frame, text="🛡️ Icon Obscured / Tolerance Mode:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#10b981").pack(anchor="w", pady=(4, 2))
+        
+        self.tolerance_var = ctk.StringVar(value="Obscured / Behind Badges (60% Confidence)")
+        tolerance_menu = ctk.CTkOptionMenu(
+            frame,
+            values=[
+                "Standard Clear Icon (85% Confidence)",
+                "Obscured / Behind Badges (60% Confidence)",
+                "Heavy Occlusion / Covered (50% Confidence)"
+            ],
+            variable=self.tolerance_var,
+            fg_color="#1e1f22",
+            button_color="#2b2d31",
+            button_hover_color="#3d4047",
+            dropdown_fg_color="#18181b"
+        )
+        tolerance_menu.pack(fill="x", pady=(0, 10))
+
+        # Match Strategy Option
+        ctk.CTkLabel(frame, text="🎨 Detection Strategy:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#f4f4f5").pack(anchor="w", pady=(2, 2))
+        
+        self.strategy_var = ctk.StringVar(value="Circle Mask (Ignore Corner Background)")
+        strategy_menu = ctk.CTkOptionMenu(
+            frame,
+            values=[
+                "Standard BGR Color",
+                "Circle Mask (Ignore Corner Background)",
+                "Grayscale (Lighting/Shadow Tolerant)",
+                "Dominant Color (HSV Filter)"
+            ],
+            variable=self.strategy_var,
+            fg_color="#1e1f22",
+            button_color="#2b2d31",
+            button_hover_color="#3d4047",
+            dropdown_fg_color="#18181b"
+        )
+        strategy_menu.pack(fill="x", pady=(0, 12))
+
+        confirm_btn = ctk.CTkButton(
+            frame,
+            text="✔ Confirm & Save Action",
+            fg_color="#10b981",
+            hover_color="#059669",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=34,
+            command=self.submit
+        )
+        confirm_btn.pack(fill="x", pady=(4, 0))
+
+    def submit(self):
+        conf_map = {
+            "Standard Clear Icon (85% Confidence)": 0.85,
+            "Obscured / Behind Badges (60% Confidence)": 0.60,
+            "Heavy Occlusion / Covered (50% Confidence)": 0.50
+        }
+        strat_map = {
+            "Standard BGR Color": "standard",
+            "Circle Mask (Ignore Corner Background)": "circle_mask",
+            "Grayscale (Lighting/Shadow Tolerant)": "grayscale",
+            "Dominant Color (HSV Filter)": "hsv_color"
+        }
+        
+        conf = conf_map.get(self.tolerance_var.get(), 0.60)
+        engine = strat_map.get(self.strategy_var.get(), "circle_mask")
+        
         self.destroy()
-        self.on_select(choice)
+        self.on_select({
+            'behavior': self.choice,
+            'confidence': conf,
+            'match_engine': engine
+        })
+
+
+def detect_object_bounds_at_point(click_x, click_y, margin=6):
+    """
+    Takes a screenshot around (click_x, click_y) and uses edge detection + contours
+    to automatically find the exact bounding box of the full object (button, icon, badge).
+    """
+    user32 = ctypes.windll.user32
+    sw = user32.GetSystemMetrics(0)
+    sh = user32.GetSystemMetrics(1)
+
+    roi_size = 360
+    rx1 = max(0, click_x - roi_size // 2)
+    ry1 = max(0, click_y - roi_size // 2)
+    rx2 = min(sw, click_x + roi_size // 2)
+    ry2 = min(sh, click_y + roi_size // 2)
+    rw = rx2 - rx1
+    rh = ry2 - ry1
+
+    if rw <= 10 or rh <= 10:
+        return (max(0, click_x - 30), max(0, click_y - 30), 60, 60)
+
+    try:
+        full_shot = win32_screenshot((rx1, ry1, rw, rh))
+        img = cv2.cvtColor(np.array(full_shot), cv2.COLOR_RGB2BGR)
+
+        local_cx = click_x - rx1
+        local_cy = click_y - ry1
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        best_rect = None
+        min_dist_to_center = float('inf')
+
+        methods = []
+        edges_canny = cv2.Canny(blurred, 30, 150)
+        methods.append(edges_canny)
+
+        _, thresh_otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        methods.append(thresh_otsu)
+        methods.append(cv2.bitwise_not(thresh_otsu))
+
+        for bin_img in methods:
+            contours, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for c in contours:
+                area = cv2.contourArea(c)
+                if area < 100 or area > (rw * rh * 0.88):
+                    continue
+                x, y, w, h = cv2.boundingRect(c)
+                if (x - 12 <= local_cx <= x + w + 12) and (y - 12 <= local_cy <= y + h + 12):
+                    box_cx = x + w / 2
+                    box_cy = y + h / 2
+                    dist = math.hypot(box_cx - local_cx, box_cy - local_cy)
+                    if dist < min_dist_to_center:
+                        min_dist_to_center = dist
+                        best_rect = (x, y, w, h)
+
+        if best_rect:
+            bx, by, bw, bh = best_rect
+            final_x = max(0, rx1 + bx - margin)
+            final_y = max(0, ry1 + by - margin)
+            final_w = min(sw - final_x, bw + margin * 2)
+            final_h = min(sh - final_y, bh + margin * 2)
+            return (final_x, final_y, final_w, final_h)
+    except Exception as e:
+        print(f"Smart Select Error: {e}")
+
+    return (max(0, click_x - 32), max(0, click_y - 32), 64, 64)
+
 
 class ScreenSnipper(Toplevel):
     def __init__(self, parent, callback):
         super().__init__(parent)
         self.parent = parent
         self.callback = callback
+        self.snipe_mode = "rectangle" # Modes: "rectangle", "smart_object", "window"
+        
         self.attributes("-alpha", 0.35, "-fullscreen", True, "-topmost", True)
         self.config(cursor="cross")
         self.canvas = Canvas(self, cursor="cross", bg="black", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
+        
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.bind("<Escape>", self.on_escape)
         self.start_x = self.start_y = self.rect = None
 
+        self.setup_floating_toolbar()
+
+    def setup_floating_toolbar(self):
+        user32 = ctypes.windll.user32
+        sw = user32.GetSystemMetrics(0)
+        
+        toolbar_w = 510
+        toolbar_h = 44
+        pos_x = max(10, (sw // 2) - (toolbar_w // 2))
+        pos_y = 15
+        
+        self.toolbar_frame = ctk.CTkFrame(
+            self,
+            width=toolbar_w,
+            height=toolbar_h,
+            fg_color="#121214",
+            border_color="#2b2d31",
+            border_width=1.5,
+            corner_radius=22
+        )
+        self.toolbar_frame.place(x=pos_x, y=pos_y)
+        self.toolbar_frame.pack_propagate(False)
+
+        btn_box = ctk.CTkFrame(self.toolbar_frame, fg_color="transparent")
+        btn_box.pack(fill="both", expand=True, padx=8, pady=4)
+
+        self.btn_rect = ctk.CTkButton(
+            btn_box,
+            text="🔳 Rectangle",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#8b5cf6",
+            hover_color="#7c3aed",
+            height=30,
+            width=95,
+            command=lambda: self.set_mode("rectangle")
+        )
+        self.btn_rect.pack(side="left", padx=2, expand=True)
+
+        self.btn_smart = ctk.CTkButton(
+            btn_box,
+            text="🪄 Smart Object",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#2b2d31",
+            hover_color="#3d4047",
+            height=30,
+            width=110,
+            command=lambda: self.set_mode("smart_object")
+        )
+        self.btn_smart.pack(side="left", padx=2, expand=True)
+
+        self.btn_win = ctk.CTkButton(
+            btn_box,
+            text="🪟 Window",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#2b2d31",
+            hover_color="#3d4047",
+            height=30,
+            width=85,
+            command=lambda: self.set_mode("window")
+        )
+        self.btn_win.pack(side="left", padx=2, expand=True)
+
+        self.btn_full = ctk.CTkButton(
+            btn_box,
+            text="🖥️ Full Screen",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#2b2d31",
+            hover_color="#3d4047",
+            height=30,
+            width=95,
+            command=self.snip_fullscreen
+        )
+        self.btn_full.pack(side="left", padx=2, expand=True)
+
+        close_btn = ctk.CTkButton(
+            btn_box,
+            text="✕",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="transparent",
+            hover_color="#ef4444",
+            text_color="#a1a1aa",
+            height=30,
+            width=28,
+            command=self.on_escape
+        )
+        close_btn.pack(side="right", padx=2)
+
+    def set_mode(self, mode):
+        self.snipe_mode = mode
+        active_color = "#8b5cf6"
+        inactive_color = "#2b2d31"
+        self.btn_rect.configure(fg_color=active_color if mode == "rectangle" else inactive_color)
+        self.btn_smart.configure(fg_color=active_color if mode == "smart_object" else inactive_color)
+        self.btn_win.configure(fg_color=active_color if mode == "window" else inactive_color)
+
     def on_press(self, e):
+        try:
+            tb_x = self.toolbar_frame.winfo_x()
+            tb_y = self.toolbar_frame.winfo_y()
+            tb_w = self.toolbar_frame.winfo_width()
+            tb_h = self.toolbar_frame.winfo_height()
+            if tb_x <= e.x <= tb_x + tb_w and tb_y <= e.y <= tb_y + tb_h:
+                return
+        except Exception:
+            pass
+
         self.start_x, self.start_y = e.x, e.y
-        self.rect = self.canvas.create_rectangle(e.x, e.y, e.x, e.y, outline="#7c3aed", width=2, fill="#7c3aed")
+        if self.rect:
+            try: self.canvas.delete(self.rect)
+            except Exception: pass
+
+        if self.snipe_mode == "smart_object":
+            x, y, w, h = detect_object_bounds_at_point(e.x, e.y)
+            self.rect = self.canvas.create_rectangle(x, y, x + w, y + h, outline="#10b981", width=3)
+            self.after(120, lambda: self.finish_snip(x, y, w, h))
+
+        elif self.snipe_mode == "window":
+            pt = POINT(e.x, e.y)
+            user32 = ctypes.windll.user32
+            hwnd = user32.WindowFromPoint(pt)
+            if hwnd:
+                rect = RECT()
+                if GetWindowRect(hwnd, ctypes.byref(rect)):
+                    wx, wy = rect.left, rect.top
+                    ww = rect.right - rect.left
+                    wh = rect.bottom - rect.top
+                    self.rect = self.canvas.create_rectangle(wx, wy, wx + ww, wy + wh, outline="#0078d4", width=3)
+                    self.after(120, lambda: self.finish_snip(wx, wy, ww, wh))
+                    return
+            self.rect = self.canvas.create_rectangle(e.x, e.y, e.x, e.y, outline="#7c3aed", width=2)
+        else:
+            self.rect = self.canvas.create_rectangle(e.x, e.y, e.x, e.y, outline="#7c3aed", width=2)
 
     def on_drag(self, e):
-        self.canvas.coords(self.rect, self.start_x, self.start_y, e.x, e.y)
+        if self.snipe_mode == "rectangle" and self.rect and self.start_x is not None:
+            self.canvas.coords(self.rect, self.start_x, self.start_y, e.x, e.y)
 
     def on_release(self, e):
+        if self.start_x is None:
+            return
+
         x1, y1, x2, y2 = min(self.start_x, e.x), min(self.start_y, e.y), max(self.start_x, e.x), max(self.start_y, e.y)
+        w = x2 - x1
+        h = y2 - y1
+
+        if self.snipe_mode == "rectangle":
+            if w > 5 and h > 5:
+                self.finish_snip(x1, y1, w, h)
+            else:
+                # Single click in rectangle mode: smart auto-select object around click!
+                sx, sy, sw, sh = detect_object_bounds_at_point(e.x, e.y)
+                self.finish_snip(sx, sy, sw, sh)
+
+    def snip_fullscreen(self):
+        user32 = ctypes.windll.user32
+        sw = user32.GetSystemMetrics(0)
+        sh = user32.GetSystemMetrics(1)
+        self.finish_snip(0, 0, sw, sh)
+
+    def finish_snip(self, x, y, w, h):
         self.withdraw()
         self.update()
-        time.sleep(0.15)
+        time.sleep(0.12)
         self.destroy()
-        if (x2 - x1) > 5 and (y2 - y1) > 5:
-            self.callback(x1, y1, x2 - x1, y2 - y1)
+        if w > 3 and h > 3:
+            self.callback(x, y, w, h)
         else:
             if self.parent:
                 self.parent.deiconify()
@@ -677,12 +930,53 @@ class ActionEditorModal(Toplevel):
             rel_cb.pack(anchor="w", pady=5)
             
         elif action['type'] == 'image_match_wait':
+            if action.get('image_path') and os.path.exists(action['image_path']):
+                try:
+                    from PIL import Image
+                    img = Image.open(action['image_path'])
+                    img.thumbnail((160, 65))
+                    ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(img.width, img.height))
+                    
+                    preview_card = ctk.CTkFrame(main_frame, fg_color="#09090b", border_color="#1e1e24", border_width=1, corner_radius=8)
+                    preview_card.pack(fill="x", pady=(0, 10))
+                    
+                    ctk.CTkLabel(preview_card, text="📸 Target Sniped Icon Target:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#a1a1aa").pack(anchor="w", padx=10, pady=(4, 2))
+                    
+                    img_lbl = ctk.CTkLabel(preview_card, image=ctk_img, text="")
+                    img_lbl.image = ctk_img
+                    img_lbl.pack(pady=(2, 6))
+                except Exception as e:
+                    pass
+
             # Confidence
-            ctk.CTkLabel(main_frame, text="Matching Confidence (0.5 - 1.0):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            ctk.CTkLabel(main_frame, text="Matching Confidence Threshold (0.30 - 1.00):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
             conf_ent = ctk.CTkEntry(main_frame, fg_color="#09090b", border_color="#1e1e24")
             conf_ent.insert(0, f"{action.get('confidence', 0.85):.2f}")
-            conf_ent.pack(fill="x", pady=(0, 10))
+            conf_ent.pack(fill="x", pady=(0, 2))
             self.fields['confidence'] = conf_ent
+
+            ctk.CTkLabel(main_frame, text="💡 Tip: Lower confidence (0.55-0.65) if icon is behind badges/text/objects.", font=ctk.CTkFont(size=10), text_color="#a1a1aa").pack(anchor="w", pady=(0, 8))
+
+            # Match Engine Dropdown
+            ctk.CTkLabel(main_frame, text="Detection Strategy (For Obscured Icons):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
+            engine_map = {
+                "standard": "Standard BGR Color",
+                "circle_mask": "Circle Mask (Ignore Corner Background)",
+                "grayscale": "Grayscale (Lighting/Shadow Tolerant)",
+                "hsv_color": "Dominant Color (HSV Filter)"
+            }
+            curr_engine = action.get('match_engine', 'standard')
+            self.engine_var = ctk.StringVar(value=engine_map.get(curr_engine, "Standard BGR Color"))
+            engine_menu = ctk.CTkOptionMenu(
+                main_frame,
+                values=list(engine_map.values()),
+                variable=self.engine_var,
+                fg_color="#2b2d31",
+                button_color="#2b2d31",
+                button_hover_color="#3d4047",
+                dropdown_fg_color="#1e1f22"
+            )
+            engine_menu.pack(fill="x", pady=(0, 10))
             
             # Match Behavior Dropdown
             ctk.CTkLabel(main_frame, text="Action on Match:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(5, 2))
@@ -860,6 +1154,15 @@ class ActionEditorModal(Toplevel):
             val = str(self.action['key_to_press']).strip()
             self.action['key_to_press'] = val.upper() if val else None
                 
+        if hasattr(self, 'engine_var'):
+            engine_map_rev = {
+                "Standard BGR Color": "standard",
+                "Circle Mask (Ignore Corner Background)": "circle_mask",
+                "Grayscale (Lighting/Shadow Tolerant)": "grayscale",
+                "Dominant Color (HSV Filter)": "hsv_color"
+            }
+            self.action['match_engine'] = engine_map_rev.get(self.engine_var.get(), "standard")
+            
         if hasattr(self, 'rel_var'):
             self.action['is_release'] = (self.rel_var.get() == "on")
         if hasattr(self, 'use_coords_var'):
@@ -905,7 +1208,7 @@ class MacroApp(ctk.CTk):
         self.fast_click_switch_var = ctk.StringVar(value="off")
         self.record_coords_switch_var = ctk.StringVar(value="off")
         self.turbo_scan_switch_var = ctk.StringVar(value="on")
-        self.bg_mode_switch_var = ctk.StringVar(value="off")
+        self.obscured_autofix_switch_var = ctk.StringVar(value="on")
         
         self.global_trigger_image_path = None
         self.global_text_trigger_text = ""
@@ -995,6 +1298,7 @@ class MacroApp(ctk.CTk):
         CTKTooltip(self.save_btn, "Export the current macro actions list and settings to a JSON file.")
         CTKTooltip(self.load_btn, "Import macro actions list and settings from a JSON file.")
         CTKTooltip(self.clear_timeline_btn, "Remove all actions from the current pipeline timeline.")
+        CTKTooltip(self.obscured_autofix_switch, "Automatically detect icons when partially covered by badges (e.g. pencil, x2), text, or moving backgrounds.")
 
     def setup_layout_grid(self):
         # Configure layout with a top header and two main columns
@@ -1025,8 +1329,8 @@ class MacroApp(ctk.CTk):
         self.status_label.pack()
 
         # ── PROPERTIES CONTROLS (LEFT PANEL - TABBED VIEW) ──────────────────────
-        self.middle_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.middle_frame.grid(row=1, column=0, sticky="nsew", padx=14, pady=14)
+        self.middle_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.middle_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
 
         # Segmented Tab View
         self.tabview = ctk.CTkTabview(
@@ -1050,152 +1354,117 @@ class MacroApp(ctk.CTk):
         # ── Tab 1: Action Desk Controls ──
         # Workspace action buttons
         self.act_card = ctk.CTkFrame(tab_desk, fg_color="transparent")
-        self.act_card.pack(fill="x", pady=6, padx=8)
+        self.act_card.pack(fill="x", pady=3, padx=6)
 
         # Anchor window configuration card
         self.anchor_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
-        self.anchor_card.pack(fill="x", pady=6, padx=8)
+        self.anchor_card.pack(fill="x", pady=3, padx=6)
         self.anchor_status_lbl = ctk.CTkLabel(self.anchor_card, text="Anchor Window: Independent", font=ctk.CTkFont(size=11, family="Consolas"), text_color=ACCENT_BLUE, anchor="w")
-        self.anchor_status_lbl.pack(side="left", padx=14, pady=10)
+        self.anchor_status_lbl.pack(side="left", padx=10, pady=6)
 
         # Global vision image trigger card
         img_trigger_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
-        img_trigger_card.pack(fill="x", pady=6, padx=8)
+        img_trigger_card.pack(fill="x", pady=3, padx=6)
         
         self.trigger_header_container = ctk.CTkFrame(img_trigger_card, fg_color="transparent")
-        self.trigger_header_container.pack(fill="x", padx=12, pady=4)
+        self.trigger_header_container.pack(fill="x", padx=10, pady=2)
         
-        self.trigger_status_title = ctk.CTkLabel(self.trigger_header_container, text="📸 GLOBAL SEQUENCE IMAGE TRIGGER", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN)
-        self.trigger_status_title.pack(side="left", pady=4)
+        self.trigger_status_title = ctk.CTkLabel(self.trigger_header_container, text="📸 GLOBAL SEQUENCE IMAGE TRIGGER", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_MAIN)
+        self.trigger_status_title.pack(side="left", pady=2)
         
         self.img_trigger_switch_var = ctk.StringVar(value="off")
-        self.img_trigger_switch = ctk.CTkSwitch(self.trigger_header_container, text="", variable=self.img_trigger_switch_var, onvalue="on", offvalue="off", width=40, command=self.toggle_image_trigger_view)
+        self.img_trigger_switch = ctk.CTkSwitch(self.trigger_header_container, text="", variable=self.img_trigger_switch_var, onvalue="on", offvalue="off", width=36, command=self.toggle_image_trigger_view)
         self.img_trigger_switch.pack(side="right", padx=2)
 
-        self.clear_img_trigger_btn = ctk.CTkButton(self.trigger_header_container, text="❌ Clear", width=55, height=18, fg_color="#2b2d31", hover_color=ACCENT_RED, text_color=TEXT_MUTED, font=ctk.CTkFont(size=10, weight="bold"), command=self.remove_global_trigger_image)
+        self.clear_img_trigger_btn = ctk.CTkButton(self.trigger_header_container, text="❌ Clear", width=50, height=16, fg_color="#2b2d31", hover_color=ACCENT_RED, text_color=TEXT_MUTED, font=ctk.CTkFont(size=9, weight="bold"), command=self.remove_global_trigger_image)
         
         self.btn_container = ctk.CTkFrame(img_trigger_card, fg_color="transparent")
-        self.trigger_image_label = ctk.CTkLabel(img_trigger_card, text="No trigger image selected", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MUTED)
+        self.trigger_image_label = ctk.CTkLabel(img_trigger_card, text="No trigger image selected", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_MUTED)
         self.center_preview_label = ctk.CTkLabel(img_trigger_card, text="")
 
         # ── Action Desk Icon Detection Actions Creator Card ──
         icon_actions_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
-        icon_actions_card.pack(fill="x", pady=6, padx=8)
+        icon_actions_card.pack(fill="x", pady=3, padx=6)
         
-        ctk.CTkLabel(icon_actions_card, text="📸 SCREEN ICON DETECTION ACTIONS", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=12, pady=(10, 4))
+        ctk.CTkLabel(icon_actions_card, text="📸 SCREEN ICON DETECTION ACTIONS", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=10, pady=(6, 2))
         
         icon_btn_frame = ctk.CTkFrame(icon_actions_card, fg_color="transparent")
-        icon_btn_frame.pack(fill="x", padx=12, pady=(2, 10))
+        icon_btn_frame.pack(fill="x", padx=10, pady=(2, 6))
         
-        self.snipe_click_icon_btn = ctk.CTkButton(icon_btn_frame, text="🎯 Snipe & Click Icon", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=lambda: self.trigger_screen_sniper_flow(click_on_match=True))
+        self.snipe_click_icon_btn = ctk.CTkButton(icon_btn_frame, text="🎯 Snipe & Click Icon", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=11, weight="bold"), height=30, command=lambda: self.trigger_screen_sniper_flow(click_on_match=True))
         self.snipe_click_icon_btn.pack(side="left", fill="x", expand=True, padx=2)
         
-        self.snipe_wait_icon_btn = ctk.CTkButton(icon_btn_frame, text="👁️ Snipe & Wait Icon", fg_color=ACCENT_GREEN, hover_color="#059669", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=lambda: self.trigger_screen_sniper_flow(click_on_match=False))
+        self.snipe_wait_icon_btn = ctk.CTkButton(icon_btn_frame, text="👁️ Snipe & Wait Icon", fg_color=ACCENT_GREEN, hover_color="#059669", font=ctk.CTkFont(size=11, weight="bold"), height=30, command=lambda: self.trigger_screen_sniper_flow(click_on_match=False))
         self.snipe_wait_icon_btn.pack(side="left", fill="x", expand=True, padx=2)
 
         # ── Action Desk Vision Actions Creator Card ──
         vision_actions_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
-        vision_actions_card.pack(fill="x", pady=6, padx=8)
+        vision_actions_card.pack(fill="x", pady=3, padx=6)
         
         self.text_trigger_header_container = ctk.CTkFrame(vision_actions_card, fg_color="transparent")
-        self.text_trigger_header_container.pack(fill="x", padx=12, pady=4)
+        self.text_trigger_header_container.pack(fill="x", padx=10, pady=2)
         
-        self.text_trigger_status_title = ctk.CTkLabel(self.text_trigger_header_container, text="📝 GLOBAL SEQUENCE TEXT TRIGGER", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN)
-        self.text_trigger_status_title.pack(side="left", pady=4)
+        self.text_trigger_status_title = ctk.CTkLabel(self.text_trigger_header_container, text="📝 GLOBAL SEQUENCE TEXT TRIGGER", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_MAIN)
+        self.text_trigger_status_title.pack(side="left", pady=2)
         
         self.text_trigger_switch_var = ctk.StringVar(value="off")
-        self.text_trigger_switch = ctk.CTkSwitch(self.text_trigger_header_container, text="", variable=self.text_trigger_switch_var, onvalue="on", offvalue="off", width=40, command=self.toggle_text_trigger_view)
+        self.text_trigger_switch = ctk.CTkSwitch(self.text_trigger_header_container, text="", variable=self.text_trigger_switch_var, onvalue="on", offvalue="off", width=36, command=self.toggle_text_trigger_view)
         self.text_trigger_switch.pack(side="right", padx=2)
         
-        self.clear_text_trigger_btn = ctk.CTkButton(self.text_trigger_header_container, text="❌ Clear", width=55, height=18, fg_color="#2b2d31", hover_color=ACCENT_RED, text_color=TEXT_MUTED, font=ctk.CTkFont(size=10, weight="bold"), command=self.remove_global_text_trigger)
+        self.clear_text_trigger_btn = ctk.CTkButton(self.text_trigger_header_container, text="❌ Clear", width=50, height=16, fg_color="#2b2d31", hover_color=ACCENT_RED, text_color=TEXT_MUTED, font=ctk.CTkFont(size=9, weight="bold"), command=self.remove_global_text_trigger)
         
         self.text_trigger_container = ctk.CTkFrame(vision_actions_card, fg_color="transparent")
         
         # Inline text query entry field
-        self.vision_query_entry = ctk.CTkEntry(self.text_trigger_container, placeholder_text="Enter text to search or wait for...", fg_color=APP_BG, border_color=BORDER_COLOR, height=28)
-        self.vision_query_entry.pack(fill="x", padx=12, pady=(2, 6))
+        self.vision_query_entry = ctk.CTkEntry(self.text_trigger_container, placeholder_text="Enter text to search or wait for...", fg_color=APP_BG, border_color=BORDER_COLOR, height=26)
+        self.vision_query_entry.pack(fill="x", padx=10, pady=(2, 4))
         
         self.ocr_whole_screen_var = ctk.StringVar(value="on")
-        self.ocr_whole_screen_switch = ctk.CTkSwitch(self.text_trigger_container, text="Scan Whole Screen", variable=self.ocr_whole_screen_var, onvalue="on", offvalue="off", font=ctk.CTkFont(size=12), command=self.update_ocr_text_label)
-        self.ocr_whole_screen_switch.pack(anchor="w", padx=14, pady=4)
+        self.ocr_whole_screen_switch = ctk.CTkSwitch(self.text_trigger_container, text="Scan Whole Screen", variable=self.ocr_whole_screen_var, onvalue="on", offvalue="off", font=ctk.CTkFont(size=11), command=self.update_ocr_text_label)
+        self.ocr_whole_screen_switch.pack(anchor="w", padx=10, pady=2)
         
         v_btn_frame = ctk.CTkFrame(self.text_trigger_container, fg_color="transparent")
-        v_btn_frame.pack(fill="x", padx=12, pady=(2, 10))
+        v_btn_frame.pack(fill="x", padx=10, pady=(2, 6))
         
-        self.add_ocr_click_btn = ctk.CTkButton(v_btn_frame, text="🔍 Wait & Click Text", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_ocr_click_flow)
+        self.add_ocr_click_btn = ctk.CTkButton(v_btn_frame, text="🔍 Wait & Click Text", fg_color=ACCENT_PURPLE, hover_color="#6d28d9", font=ctk.CTkFont(size=11, weight="bold"), height=30, command=self.trigger_ocr_click_flow)
         self.add_ocr_click_btn.pack(side="left", fill="x", expand=True, padx=2)
         
-        self.add_ocr_wait_btn = ctk.CTkButton(v_btn_frame, text="📝 Wait for Text", fg_color=ACCENT_GREEN, hover_color="#059669", font=ctk.CTkFont(size=12, weight="bold"), height=34, command=self.trigger_ocr_wait_flow)
+        self.add_ocr_wait_btn = ctk.CTkButton(v_btn_frame, text="📝 Wait for Text", fg_color=ACCENT_GREEN, hover_color="#059669", font=ctk.CTkFont(size=11, weight="bold"), height=30, command=self.trigger_ocr_wait_flow)
         self.add_ocr_wait_btn.pack(side="left", fill="x", expand=True, padx=2)
 
-        self.ocr_text_label = ctk.CTkLabel(self.text_trigger_container, text="No text query active", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MUTED)
-        self.ocr_text_label.pack(pady=(2, 10))
+        self.ocr_text_label = ctk.CTkLabel(self.text_trigger_container, text="No text query active", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_MUTED)
+        self.ocr_text_label.pack(pady=(1, 6))
         self.vision_query_entry.bind("<KeyRelease>", self.update_ocr_text_label)
 
         # ── Action Desk: Configurations & Humanization (Merged Settings) ──
         # Dynamic inputs packed when loop mode is clicked
         from tkinter import Frame
         self.dynamic_loop_inputs = Frame(tab_desk, bg=PANEL_BG, bd=0, highlightthickness=0)
-        self.dynamic_loop_inputs.pack(fill="x", pady=2, padx=8)
+        self.dynamic_loop_inputs.pack(fill="x", pady=2, padx=6)
 
         # Loop modes
         drv_card = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
-        drv_card.pack(fill="x", pady=6, padx=8)
-        ctk.CTkLabel(drv_card, text="⏱️ INTERACTION CONFIGURATIONS", font=ctk.CTkFont(size=11, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=12, pady=6)
+        drv_card.pack(fill="x", pady=3, padx=6)
+        ctk.CTkLabel(drv_card, text="⏱️ INTERACTION CONFIGURATIONS", font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=10, pady=4)
         db = ctk.CTkFrame(drv_card, fg_color="transparent")
-        db.pack(fill="x", padx=14, pady=8)
-        ctk.CTkRadioButton(db, text="One Time Execution", variable=self.loop_var, value="One Time", font=ctk.CTkFont(size=12), command=self.change_loop_mode).pack(anchor="w", pady=2)
-        ctk.CTkRadioButton(db, text="Infinite Processing Loops", variable=self.loop_var, value="Loop", font=ctk.CTkFont(size=12), command=self.change_loop_mode).pack(anchor="w", pady=2)
-        ctk.CTkRadioButton(db, text="Custom Loop Count Iterations", variable=self.loop_var, value="Count", font=ctk.CTkFont(size=12), command=self.change_loop_mode).pack(anchor="w", pady=2)
+        db.pack(fill="x", padx=10, pady=4)
+        ctk.CTkRadioButton(db, text="One Time Execution", variable=self.loop_var, value="One Time", font=ctk.CTkFont(size=11), command=self.change_loop_mode).pack(anchor="w", pady=1)
+        ctk.CTkRadioButton(db, text="Infinite Processing Loops", variable=self.loop_var, value="Loop", font=ctk.CTkFont(size=11), command=self.change_loop_mode).pack(anchor="w", pady=1)
+        ctk.CTkRadioButton(db, text="Custom Loop Count Iterations", variable=self.loop_var, value="Count", font=ctk.CTkFont(size=11), command=self.change_loop_mode).pack(anchor="w", pady=1)
 
         # Anti-Detection
         hb = ctk.CTkFrame(tab_desk, fg_color=PANEL_BG, border_color=BORDER_COLOR, border_width=1, corner_radius=8)
-        hb.pack(fill="x", pady=6, padx=8)
-        ctk.CTkLabel(hb, text="🛡️ ANTI-DETECTION HUMANIZATION", font=ctk.CTkFont(size=11, weight="bold"), text_color=ACCENT_GREEN).pack(anchor="w", padx=12, pady=6)
+        hb.pack(fill="x", pady=3, padx=6)
+        ctk.CTkLabel(hb, text="🛡️ ANTI-DETECTION HUMANIZATION", font=ctk.CTkFont(size=10, weight="bold"), text_color=ACCENT_GREEN).pack(anchor="w", padx=10, pady=4)
         hbb = ctk.CTkFrame(hb, fg_color="transparent")
-        hbb.pack(fill="x", padx=14, pady=8)
-        ctk.CTkSwitch(hbb, text="Enable Organic Bézier Curves", font=ctk.CTkFont(size=12), variable=self.bezier_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
-        ctk.CTkSwitch(hbb, text="Randomize Target Jitter", font=ctk.CTkFont(size=12), variable=self.fuzz_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
-        ctk.CTkSwitch(hbb, text="Instant Clicks (Non-Human Fast Click)", font=ctk.CTkFont(size=12), variable=self.fast_click_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
-        ctk.CTkSwitch(hbb, text="Record Mouse Coordinates (X/Y)", font=ctk.CTkFont(size=12), variable=self.record_coords_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
-        ctk.CTkSwitch(hbb, text="Turbo Scan Mode (Super Fast Icons/Text)", font=ctk.CTkFont(size=12), variable=self.turbo_scan_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=3)
-        self.bg_switch = ctk.CTkSwitch(
-            hbb, 
-            text="Background Mode (Run in background window)", 
-            font=ctk.CTkFont(size=12), 
-            variable=self.bg_mode_switch_var, 
-            onvalue="on", 
-            offvalue="off",
-            command=self.toggle_background_mode
-        )
-        self.bg_switch.pack(anchor="w", pady=3)
-        
-        self.bg_process_container = ctk.CTkFrame(hbb, fg_color="transparent")
-        
-        self.bg_process_var = ctk.StringVar(value="Select Background Window...")
-        self.bg_process_menu = ctk.CTkOptionMenu(
-            self.bg_process_container,
-            values=["Select Background Window..."],
-            variable=self.bg_process_var,
-            command=self.on_bg_process_selected,
-            fg_color="#2b2d31",
-            button_color="#2b2d31",
-            button_hover_color="#3d4047",
-            dropdown_fg_color="#1e1f22",
-            width=220
-        )
-        self.bg_process_menu.pack(side="left", padx=(0, 4))
-        
-        self.bg_process_refresh_btn = ctk.CTkButton(
-            self.bg_process_container,
-            text="🔄",
-            width=30,
-            height=28,
-            fg_color="#2b2d31",
-            hover_color="#3d4047",
-            command=self.refresh_bg_process_list
-        )
-        self.bg_process_refresh_btn.pack(side="left")
+        hbb.pack(fill="x", padx=10, pady=4)
+        ctk.CTkSwitch(hbb, text="Enable Organic Bézier Curves", font=ctk.CTkFont(size=11), variable=self.bezier_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=1)
+        ctk.CTkSwitch(hbb, text="Randomize Target Jitter", font=ctk.CTkFont(size=11), variable=self.fuzz_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=1)
+        ctk.CTkSwitch(hbb, text="Instant Clicks (Non-Human Fast Click)", font=ctk.CTkFont(size=11), variable=self.fast_click_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=1)
+        ctk.CTkSwitch(hbb, text="Record Mouse Coordinates (X/Y)", font=ctk.CTkFont(size=11), variable=self.record_coords_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=1)
+        ctk.CTkSwitch(hbb, text="Turbo Scan Mode (Super Fast Icons/Text)", font=ctk.CTkFont(size=11), variable=self.turbo_scan_switch_var, onvalue="on", offvalue="off").pack(anchor="w", pady=1)
+        self.obscured_autofix_switch = ctk.CTkSwitch(hbb, text="Obscured Icons Auto-Fix (Detect icons behind text/badges)", font=ctk.CTkFont(size=11), variable=self.obscured_autofix_switch_var, onvalue="on", offvalue="off")
+        self.obscured_autofix_switch.pack(anchor="w", pady=1)
 
         # ── Tab 3: Shortcut Drivers & Controller ──
         # System Hotkeys bind box
@@ -1227,7 +1496,7 @@ class MacroApp(ctk.CTk):
 
         th = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         th.pack(fill="x", pady=(16, 10), padx=16)
-        ctk.CTkLabel(th, text="Visual Pipeline Flow", font=ctk.CTkFont(size=15, weight="bold"), text_color=TEXT_MAIN).pack(side="left")
+        ctk.CTkLabel(th, text="Macro Record", font=ctk.CTkFont(size=15, weight="bold"), text_color=TEXT_MAIN).pack(side="left")
         
         self.clear_timeline_btn = ctk.CTkButton(th, text="🗑️ Clear Timeline", fg_color=ACCENT_RED, hover_color="#b91c1c", font=ctk.CTkFont(size=11, weight="bold"), width=110, height=28, command=self.clear_macro)
         self.clear_timeline_btn.pack(side="right", padx=(4, 0))
@@ -1360,42 +1629,6 @@ class MacroApp(ctk.CTk):
         self.recorded_target_exe = "Unknown Window"
         self.anchor_status_lbl.configure(text="Anchor Window: Independent")
 
-    def toggle_background_mode(self):
-        if self.bg_mode_switch_var.get() == "on":
-            self.bg_process_container.pack(fill="x", padx=10, pady=4)
-            self.refresh_bg_process_list()
-        else:
-            self.bg_process_container.pack_forget()
-
-    def refresh_bg_process_list(self):
-        windows = get_all_visible_windows_info()
-        self.bg_window_map = {}
-        values = []
-        for hwnd, exe, title in windows:
-            display_name = f"{exe} - {title}"
-            self.bg_window_map[display_name] = (hwnd, exe)
-            values.append(display_name)
-            
-        if not values:
-            values = ["No active windows found"]
-            
-        self.bg_process_menu.configure(values=values)
-        
-        found = False
-        for disp, (h, e) in self.bg_window_map.items():
-            if h == self.recorded_target_hwnd:
-                self.bg_process_var.set(disp)
-                found = True
-                break
-        if not found:
-            self.bg_process_var.set("Select Background Window...")
-
-    def on_bg_process_selected(self, choice):
-        if hasattr(self, 'bg_window_map') and choice in self.bg_window_map:
-            hwnd, exe = self.bg_window_map[choice]
-            self.recorded_target_hwnd = hwnd
-            self.recorded_target_exe = exe
-            self.anchor_status_lbl.configure(text=f"Anchor Window: {exe}")
 
     def toggle_image_trigger_view(self):
         if self.img_trigger_switch_var.get() == "on":
@@ -1420,7 +1653,7 @@ class MacroApp(ctk.CTk):
                 self.center_preview_label.image = ctk_img  # Reference to avoid GC
                 self.center_preview_label.pack(pady=(5, 10))
             else:
-                self.center_preview_label.configure(image=None, text="")
+                self.center_preview_label.configure(image="", text="")
                 self.center_preview_label.pack_forget()
         except Exception as e:
             print(f"Preview Error: {e}")
@@ -1590,8 +1823,20 @@ class MacroApp(ctk.CTk):
         
         click_val = getattr(self, 'last_snipe_click_default', False)
         
+        default_conf = 0.60 if self.obscured_autofix_switch_var.get() == "on" else 0.85
+        default_engine = "circle_mask" if self.obscured_autofix_switch_var.get() == "on" else "standard"
+        
         if click_val:
-            def on_behavior_selected(choice):
+            def on_behavior_selected(res):
+                if isinstance(res, str):
+                    choice = res
+                    conf = default_conf
+                    engine = default_engine
+                else:
+                    choice = res.get('behavior', 'click')
+                    conf = res.get('confidence', default_conf)
+                    engine = res.get('match_engine', default_engine)
+                    
                 key_to_press = None
                 match_behavior = choice
                 
@@ -1609,19 +1854,21 @@ class MacroApp(ctk.CTk):
                 self.add_single_action_to_live_ui({
                     'type': 'image_match_wait',
                     'image_path': asset_path,
-                    'confidence': 0.85,
+                    'confidence': conf,
+                    'match_engine': engine,
                     'click_on_match': True,
                     'match_behavior': match_behavior,
                     'key_to_press': key_to_press,
                     'delay': 0.5
                 })
             
-            IconActionChoiceModal(self, on_behavior_selected)
+            IconActionChoiceModal(self, on_behavior_selected, image_path=asset_path)
         else:
             self.add_single_action_to_live_ui({
                 'type': 'image_match_wait',
                 'image_path': asset_path,
-                'confidence': 0.85,
+                'confidence': default_conf,
+                'match_engine': default_engine,
                 'click_on_match': False,
                 'match_behavior': 'wait',
                 'key_to_press': None,
@@ -1868,29 +2115,22 @@ class MacroApp(ctk.CTk):
         loop_delay = max(0.0, float(self.loop_delay_entry.get())) if current_loop_mode in ("Loop", "Count") else 0.1
         
         loop_count = 0
-        is_bg = (self.bg_mode_switch_var.get() == "on" and self.recorded_target_hwnd is not None)
-        hwnd = self.recorded_target_hwnd if is_bg else None
+        is_bg = False
+        hwnd = None
         
         is_turbo = (self.turbo_scan_switch_var.get() == "on")
-        if is_bg:
-            get_screen = lambda reg=None: cv2.cvtColor(np.array(win32_window_screenshot(hwnd, reg)), cv2.COLOR_RGB2BGR)
-            get_shot = lambda reg: win32_window_screenshot(hwnd, reg)
-            img_sleep = 0.01 if is_turbo else 0.1
-            text_sleep = 0.05 if is_turbo else 0.2
-            pixel_sleep = 0.005 if is_turbo else 0.05
+        if is_turbo:
+            get_screen = lambda reg=None: cv2.cvtColor(np.array(win32_screenshot(reg)), cv2.COLOR_RGB2BGR)
+            get_shot = lambda reg: win32_screenshot(reg)
+            img_sleep = 0.01
+            text_sleep = 0.05
+            pixel_sleep = 0.005
         else:
-            if is_turbo:
-                get_screen = lambda reg=None: cv2.cvtColor(np.array(win32_screenshot(reg)), cv2.COLOR_RGB2BGR)
-                get_shot = lambda reg: win32_screenshot(reg)
-                img_sleep = 0.01
-                text_sleep = 0.05
-                pixel_sleep = 0.005
-            else:
-                get_screen = lambda reg=None: cv2.cvtColor(np.array(pyautogui.screenshot(region=reg) if reg else pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
-                get_shot = lambda reg: pyautogui.screenshot(region=reg)
-                img_sleep = 0.1
-                text_sleep = 0.2
-                pixel_sleep = 0.05
+            get_screen = lambda reg=None: cv2.cvtColor(np.array(pyautogui.screenshot(region=reg) if reg else pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
+            get_shot = lambda reg: pyautogui.screenshot(region=reg)
+            img_sleep = 0.1
+            text_sleep = 0.2
+            pixel_sleep = 0.05
 
         self.hud_window = LiveHUD(self, "running", stop_callback=self.toggle_playback)
 
@@ -1961,18 +2201,24 @@ class MacroApp(ctk.CTk):
                     template = cv2.imread(action['image_path'], cv2.IMREAD_COLOR)
                     matched = False
                     is_cond = action.get('is_conditional', False)
+                    conf = action.get('confidence', 0.85)
+                    engine = action.get('match_engine', 'standard')
+                    auto_fallback = (self.obscured_autofix_switch_var.get() == "on")
                     
+                    max_loc = (0, 0)
                     if is_cond:
                         screen = get_screen()
-                        res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
-                        if cv2.minMaxLoc(res)[1] >= action.get('confidence', 0.85):
+                        is_found, max_val, max_loc = match_template_enhanced(screen, template, conf, engine, auto_fallback)
+                        if is_found:
                             matched = True
                     else:
                         while self.is_playing and not matched:
                             screen = get_screen()
-                            res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
-                            if cv2.minMaxLoc(res)[1] >= action.get('confidence', 0.85): matched = True
-                            else: time.sleep(img_sleep)
+                            is_found, max_val, max_loc = match_template_enhanced(screen, template, conf, engine, auto_fallback)
+                            if is_found:
+                                matched = True
+                            else:
+                                time.sleep(img_sleep)
                             
                     if is_cond:
                         goto_idx = action.get('goto_true') if matched else action.get('goto_false')
@@ -1987,7 +2233,6 @@ class MacroApp(ctk.CTk):
                             behavior = "wait"
 
                     if matched and behavior != "wait":
-                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
                         h, w = template.shape[0], template.shape[1]
                         pos_type = action.get('click_position', 'Center')
                         if pos_type == 'Top-Left':
@@ -2023,21 +2268,46 @@ class MacroApp(ctk.CTk):
                             tx += random.randint(-2, 2)
                             ty += random.randint(-2, 2)
                         if is_bg:
-                            send_background_mouse_move(hwnd, tx, ty)
-                            if behavior == "click":
-                                send_background_mouse_click(hwnd, "left", tx, ty, is_release=False)
-                                if self.fast_click_switch_var.get() != "on":
-                                    time.sleep(random.uniform(0.04, 0.07))
-                                send_background_mouse_click(hwnd, "left", tx, ty, is_release=True)
-                            elif behavior == "press_key":
-                                kp = action.get('key_to_press')
-                                if kp:
-                                    vk = get_vk_from_key_name(kp)
-                                    if vk is not None:
-                                        send_background_key(hwnd, vk, is_release=False)
+                            is_focus_restore = (self.bg_method_var.get() == "Active Focus Restore (Roblox)")
+                            if is_focus_restore:
+                                def do_bg_match():
+                                    user32 = ctypes.windll.user32
+                                    rect = RECT()
+                                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                                    screen_x = rect.left + int(tx)
+                                    screen_y = rect.top + int(ty)
+                                    send_hardware_mouse_move(screen_x, screen_y)
+                                    if behavior == "click":
+                                        send_hardware_mouse_click("left", is_release=False)
                                         if self.fast_click_switch_var.get() != "on":
                                             time.sleep(random.uniform(0.04, 0.07))
-                                        send_background_key(hwnd, vk, is_release=True)
+                                        send_hardware_mouse_click("left", is_release=True)
+                                    elif behavior == "press_key":
+                                        kp = action.get('key_to_press')
+                                        if kp:
+                                            vk = get_vk_from_key_name(kp)
+                                            if vk is not None:
+                                                send_hardware_input(vk, is_release=False)
+                                                if self.fast_click_switch_var.get() != "on":
+                                                    time.sleep(random.uniform(0.04, 0.07))
+                                                send_hardware_input(vk, is_release=True)
+                                execute_background_input_with_focus(hwnd, do_bg_match)
+                            else:
+                                send_background_mouse_move(hwnd, tx, ty)
+                                if behavior == "click":
+                                    send_background_mouse_click(hwnd, "left", tx, ty, is_release=False)
+                                    if self.fast_click_switch_var.get() != "on":
+                                        time.sleep(random.uniform(0.04, 0.07))
+                                    send_background_mouse_click(hwnd, "left", tx, ty, is_release=True)
+                                elif behavior == "press_key":
+                                    kp = action.get('key_to_press')
+                                    if kp:
+                                        vk = get_vk_from_key_name(kp)
+                                        if vk is not None:
+                                            send_background_key(hwnd, vk, is_release=False)
+                                            if self.fast_click_switch_var.get() != "on":
+                                                time.sleep(random.uniform(0.04, 0.07))
+                                            send_background_key(hwnd, vk, is_release=True)
                         else:
                             if self.bezier_switch_var.get() == "on":
                                 sp = mouse_ctl.position
@@ -2194,11 +2464,26 @@ class MacroApp(ctk.CTk):
                             click_x += random.randint(-2, 2)
                             click_y += random.randint(-2, 2)
                         if is_bg:
-                            send_background_mouse_move(hwnd, click_x, click_y)
-                            send_background_mouse_click(hwnd, "left", click_x, click_y, is_release=False)
-                            if self.fast_click_switch_var.get() != "on":
-                                time.sleep(random.uniform(0.04, 0.07))
-                            send_background_mouse_click(hwnd, "left", click_x, click_y, is_release=True)
+                            is_focus_restore = (self.bg_method_var.get() == "Active Focus Restore (Roblox)")
+                            if is_focus_restore:
+                                def do_bg_ocr_click():
+                                    user32 = ctypes.windll.user32
+                                    rect = RECT()
+                                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                                    screen_x = rect.left + int(click_x)
+                                    screen_y = rect.top + int(click_y)
+                                    send_hardware_mouse_move(screen_x, screen_y)
+                                    send_hardware_mouse_click("left", is_release=False)
+                                    if self.fast_click_switch_var.get() != "on":
+                                        time.sleep(random.uniform(0.04, 0.07))
+                                    send_hardware_mouse_click("left", is_release=True)
+                                execute_background_input_with_focus(hwnd, do_bg_ocr_click)
+                            else:
+                                send_background_mouse_move(hwnd, click_x, click_y)
+                                send_background_mouse_click(hwnd, "left", click_x, click_y, is_release=False)
+                                if self.fast_click_switch_var.get() != "on":
+                                    time.sleep(random.uniform(0.04, 0.07))
+                                send_background_mouse_click(hwnd, "left", click_x, click_y, is_release=True)
                         else:
                             if self.bezier_switch_var.get() == "on":
                                 sp = mouse_ctl.position
@@ -2240,12 +2525,28 @@ class MacroApp(ctk.CTk):
                             btn_name = "middle"
                             
                     if is_bg:
-                        if tx is not None and ty is not None:
-                            send_background_mouse_move(hwnd, tx, ty)
-                        send_background_mouse_click(hwnd, btn_name, tx or 0, ty or 0, is_release=False)
-                        if self.fast_click_switch_var.get() != "on":
-                            time.sleep(random.uniform(0.04, 0.07))
-                        send_background_mouse_click(hwnd, btn_name, tx or 0, ty or 0, is_release=True)
+                        is_focus_restore = (self.bg_method_var.get() == "Active Focus Restore (Roblox)")
+                        if is_focus_restore:
+                            def do_bg_mouse():
+                                user32 = ctypes.windll.user32
+                                if tx is not None and ty is not None:
+                                    rect = RECT()
+                                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                                    screen_x = rect.left + int(tx)
+                                    screen_y = rect.top + int(ty)
+                                    send_hardware_mouse_move(screen_x, screen_y)
+                                send_hardware_mouse_click(btn_name, is_release=False)
+                                if self.fast_click_switch_var.get() != "on":
+                                    time.sleep(random.uniform(0.04, 0.07))
+                                send_hardware_mouse_click(btn_name, is_release=True)
+                            execute_background_input_with_focus(hwnd, do_bg_mouse)
+                        else:
+                            if tx is not None and ty is not None:
+                                send_background_mouse_move(hwnd, tx, ty)
+                            send_background_mouse_click(hwnd, btn_name, tx or 0, ty or 0, is_release=False)
+                            if self.fast_click_switch_var.get() != "on":
+                                time.sleep(random.uniform(0.04, 0.07))
+                            send_background_mouse_click(hwnd, btn_name, tx or 0, ty or 0, is_release=True)
                     else:
                         if tx is not None and ty is not None:
                             if self.bezier_switch_var.get() == "on":
@@ -2267,13 +2568,25 @@ class MacroApp(ctk.CTk):
                     if vk is not None:
                         repeats = action.get('repeat_count', 1)
                         if is_bg:
-                            if not rel and repeats > 1:
-                                for _ in range(repeats):
-                                    if not self.is_playing: break
-                                    send_background_key(hwnd, vk, is_release=False)
-                                    time.sleep(0.02)
+                            is_focus_restore = (self.bg_method_var.get() == "Active Focus Restore (Roblox)")
+                            if is_focus_restore:
+                                def do_bg_key():
+                                    if not rel and repeats > 1:
+                                        for _ in range(repeats):
+                                            if not self.is_playing: break
+                                            send_hardware_input(vk, is_release=False)
+                                            time.sleep(0.02)
+                                    else:
+                                        send_hardware_input(vk, is_release=rel)
+                                execute_background_input_with_focus(hwnd, do_bg_key)
                             else:
-                                send_background_key(hwnd, vk, is_release=rel)
+                                if not rel and repeats > 1:
+                                    for _ in range(repeats):
+                                        if not self.is_playing: break
+                                        send_background_key(hwnd, vk, is_release=False)
+                                        time.sleep(0.02)
+                                else:
+                                    send_background_key(hwnd, vk, is_release=rel)
                         else:
                             if not rel and repeats > 1:
                                 for _ in range(repeats):
@@ -2289,7 +2602,12 @@ class MacroApp(ctk.CTk):
                 i = next_i
 
             loop_count += 1
-            if self.is_playing and (max_loops == math.inf or loop_count < max_loops): time.sleep(loop_delay)
+            if self.is_playing and (max_loops == math.inf or loop_count < max_loops):
+                rem_delay = loop_delay
+                while rem_delay > 0 and self.is_playing:
+                    s_step = min(0.02, rem_delay)
+                    time.sleep(s_step)
+                    rem_delay -= s_step
 
         self.ui_queue.put("STOP_PLAYBACK")
 
@@ -2297,11 +2615,11 @@ class MacroApp(ctk.CTk):
         if self.is_recording or not self.macro_actions: return
         if not self.is_playing:
             self.is_playing = True
-            self.play_btn.configure(text="■ Stop Run", fg_color=ACCENT_RED)
+            self.play_btn.configure(text=f"■ Stop Run ({self.selected_play_hotkey})", fg_color=ACCENT_RED)
             self.status_label.configure(text="● PLAYBACK ACTIVE", text_color=ACCENT_GREEN)
             threading.Thread(target=self.play_macro, daemon=True).start()
         else:
-            self.is_playing = False
+            self.stop_playback_ui_reset()
 
     def stop_playback_ui_reset(self):
         self.is_playing = False
@@ -2722,7 +3040,8 @@ class MacroApp(ctk.CTk):
                 if key == keyboard.Key.end:       kn = "END"
                 if key == keyboard.Key.space:     kn = "SPACE"
                 if key == keyboard.Key.esc and self.is_playing:
-                    self.is_playing = False; return
+                    self.after(0, self.stop_playback_ui_reset)
+                    return
                 
                 if self.listening_for_new_hotkey is not None:
                     tgt = self.listening_for_new_hotkey; self.listening_for_new_hotkey = None
@@ -2744,37 +3063,30 @@ class MacroApp(ctk.CTk):
 
     def check_global_text_trigger_match(self):
         import pyautogui
-        is_bg = (self.bg_mode_switch_var.get() == "on" and self.recorded_target_hwnd is not None)
-        hwnd = self.recorded_target_hwnd if is_bg else None
+        is_bg = False
+        hwnd = None
 
         if self.global_text_trigger_region:
             rx, ry, rw, rh = self.global_text_trigger_region
-            if is_bg:
-                shot = win32_window_screenshot(hwnd, (rx, ry, rw, rh))
-                tx, ty = rx, ry
+            base_x, base_y = 0, 0
+            if self.recorded_target_exe and self.recorded_target_exe != "Unknown Window":
+                for win_info in get_all_visible_windows_info():
+                    if win_info[1] == self.recorded_target_exe:
+                        rect = RECT()
+                        if GetWindowRect(win_info[0], ctypes.byref(rect)):
+                            base_x, base_y = rect.left, rect.top
+                        break
+            tx = base_x + rx
+            ty = base_y + ry
+            if self.turbo_scan_switch_var.get() == "on":
+                shot = win32_screenshot((tx, ty, rw, rh))
             else:
-                base_x, base_y = 0, 0
-                if self.recorded_target_exe and self.recorded_target_exe != "Unknown Window":
-                    for win_info in get_all_visible_windows_info():
-                        if win_info[1] == self.recorded_target_exe:
-                            rect = RECT()
-                            if GetWindowRect(win_info[0], ctypes.byref(rect)):
-                                base_x, base_y = rect.left, rect.top
-                            break
-                tx = base_x + rx
-                ty = base_y + ry
-                if self.turbo_scan_switch_var.get() == "on":
-                    shot = win32_screenshot((tx, ty, rw, rh))
-                else:
-                    shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
+                shot = pyautogui.screenshot(region=(tx, ty, rw, rh))
         else:
-            if is_bg:
-                shot = win32_window_screenshot(hwnd)
+            if self.turbo_scan_switch_var.get() == "on":
+                shot = win32_screenshot()
             else:
-                if self.turbo_scan_switch_var.get() == "on":
-                    shot = win32_screenshot()
-                else:
-                    shot = pyautogui.screenshot()
+                shot = pyautogui.screenshot()
             tx, ty = 0, 0
             
         os.makedirs("./assets", exist_ok=True)
@@ -2901,8 +3213,13 @@ class MacroApp(ctk.CTk):
             pos = action.get('click_position', 'Center')
             pos_suffix = f" ({pos})" if pos != 'Center' else ""
             
+            conf = action.get('confidence', 0.85)
+            conf_str = f" [Obscured {int(conf*100)}%]" if conf < 0.80 else ""
+            engine = action.get('match_engine', 'standard')
+            engine_str = f" [{engine}]" if engine != 'standard' else ""
+            
             cond_flag = f" (Branch T➔{action.get('goto_true')} F➔{action.get('goto_false')})" if action.get('is_conditional', False) else ""
-            return f"📸 [{idx+1:02d}] Icon Match ➔ {click_flag}{pos_suffix} {os.path.basename(action['image_path'])}{cond_flag}"
+            return f"📸 [{idx+1:02d}] Icon Match ➔ {click_flag}{pos_suffix} {os.path.basename(action['image_path'])}{conf_str}{engine_str}{cond_flag}"
         if action['type'] == 'ocr_wait': return f"📝 [{idx+1:02d}] Wait for Text ➔ \"{action['text_query']}\""
         if action['type'] == 'ocr_click': return f"🔍 [{idx+1:02d}] OCR Click ➔ \"{action['text_query']}\""
         
