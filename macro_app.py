@@ -516,25 +516,25 @@ class IconActionChoiceModal(Toplevel):
         })
 
 
-def detect_object_bounds_at_point(click_x, click_y, margin=6):
+def detect_object_bounds_at_point(click_x, click_y, margin=5):
     """
-    Takes a screenshot around (click_x, click_y) and uses edge detection + contours
-    to automatically find the exact bounding box of the full object (button, icon, badge).
+    Takes a focused screenshot around (click_x, click_y) and uses seeded FloodFill
+    + contour detection to isolate the exact target icon without background terrain.
     """
     user32 = ctypes.windll.user32
     sw = user32.GetSystemMetrics(0)
     sh = user32.GetSystemMetrics(1)
 
-    roi_size = 360
-    rx1 = max(0, click_x - roi_size // 2)
-    ry1 = max(0, click_y - roi_size // 2)
-    rx2 = min(sw, click_x + roi_size // 2)
-    ry2 = min(sh, click_y + roi_size // 2)
+    roi_radius = 120
+    rx1 = max(0, click_x - roi_radius)
+    ry1 = max(0, click_y - roi_radius)
+    rx2 = min(sw, click_x + roi_radius)
+    ry2 = min(sh, click_y + roi_radius)
     rw = rx2 - rx1
     rh = ry2 - ry1
 
     if rw <= 10 or rh <= 10:
-        return (max(0, click_x - 30), max(0, click_y - 30), 60, 60)
+        return (max(0, click_x - 35), max(0, click_y - 35), 70, 70)
 
     try:
         full_shot = win32_screenshot((rx1, ry1, rw, rh))
@@ -543,46 +543,62 @@ def detect_object_bounds_at_point(click_x, click_y, margin=6):
         local_cx = click_x - rx1
         local_cy = click_y - ry1
 
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Method 1: Seeded FloodFill from click point (local_cx, local_cy)
+        h, w = img.shape[:2]
+        mask = np.zeros((h + 2, w + 2), np.uint8)
 
-        best_rect = None
-        min_dist_to_center = float('inf')
+        img_copy = img.copy()
+        lo_diff = (28, 28, 28)
+        up_diff = (28, 28, 28)
+        flags = 4 | (255 << 8) | cv2.FLOODFILL_FIXED_RANGE
 
-        methods = []
-        edges_canny = cv2.Canny(blurred, 30, 150)
-        methods.append(edges_canny)
+        cv2.floodFill(img_copy, mask, (local_cx, local_cy), (255, 255, 255), lo_diff, up_diff, flags)
+        ff_mask = mask[1:-1, 1:-1]
 
-        _, thresh_otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        methods.append(thresh_otsu)
-        methods.append(cv2.bitwise_not(thresh_otsu))
+        contours, _ = cv2.findContours(ff_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        best_box = None
+        for c in contours:
+            area = cv2.contourArea(c)
+            if 150 <= area <= (rw * rh * 0.70):
+                bx, by, bw, bh = cv2.boundingRect(c)
+                if (bx - 8 <= local_cx <= bx + bw + 8) and (by - 8 <= local_cy <= by + bh + 8):
+                    best_box = (bx, by, bw, bh)
+                    break
 
-        for bin_img in methods:
-            contours, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours:
+        if not best_box:
+            # Method 2: Canny edge contours focused tightly around (local_cx, local_cy)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            edges = cv2.Canny(blurred, 30, 140)
+            
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+            cnts, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            min_dist = float('inf')
+            for c in cnts:
                 area = cv2.contourArea(c)
-                if area < 100 or area > (rw * rh * 0.88):
-                    continue
-                x, y, w, h = cv2.boundingRect(c)
-                if (x - 12 <= local_cx <= x + w + 12) and (y - 12 <= local_cy <= y + h + 12):
-                    box_cx = x + w / 2
-                    box_cy = y + h / 2
+                bx, by, bw, bh = cv2.boundingRect(c)
+                if 180 <= area <= (rw * rh * 0.70) and 20 <= bw <= 180 and 20 <= bh <= 180:
+                    box_cx = bx + bw / 2
+                    box_cy = by + bh / 2
                     dist = math.hypot(box_cx - local_cx, box_cy - local_cy)
-                    if dist < min_dist_to_center:
-                        min_dist_to_center = dist
-                        best_rect = (x, y, w, h)
+                    if dist < min_dist and (bx - 10 <= local_cx <= bx + bw + 10) and (by - 10 <= local_cy <= by + bh + 10):
+                        min_dist = dist
+                        best_box = (bx, by, bw, bh)
 
-        if best_rect:
-            bx, by, bw, bh = best_rect
+        if best_box:
+            bx, by, bw, bh = best_box
             final_x = max(0, rx1 + bx - margin)
             final_y = max(0, ry1 + by - margin)
             final_w = min(sw - final_x, bw + margin * 2)
             final_h = min(sh - final_y, bh + margin * 2)
             return (final_x, final_y, final_w, final_h)
+
     except Exception as e:
         print(f"Smart Select Error: {e}")
 
-    return (max(0, click_x - 32), max(0, click_y - 32), 64, 64)
+    return (max(0, click_x - 35), max(0, click_y - 35), 70, 70)
 
 
 class ScreenSnipper(Toplevel):
@@ -590,7 +606,9 @@ class ScreenSnipper(Toplevel):
         super().__init__(parent)
         self.parent = parent
         self.callback = callback
-        self.snipe_mode = "rectangle" # Modes: "rectangle", "smart_object", "window"
+        self.snipe_mode = "rectangle" # Modes: "rectangle", "smart_object", "freeform", "window"
+        self.freehand_pts = []
+        self.freehand_drawings = []
         
         self.attributes("-alpha", 0.35, "-fullscreen", True, "-topmost", True)
         self.config(cursor="cross")
@@ -609,7 +627,7 @@ class ScreenSnipper(Toplevel):
         user32 = ctypes.windll.user32
         sw = user32.GetSystemMetrics(0)
         
-        toolbar_w = 510
+        toolbar_w = 590
         toolbar_h = 44
         pos_x = max(10, (sw // 2) - (toolbar_w // 2))
         pos_y = 15
@@ -627,7 +645,7 @@ class ScreenSnipper(Toplevel):
         self.toolbar_frame.pack_propagate(False)
 
         btn_box = ctk.CTkFrame(self.toolbar_frame, fg_color="transparent")
-        btn_box.pack(fill="both", expand=True, padx=8, pady=4)
+        btn_box.pack(fill="both", expand=True, padx=6, pady=4)
 
         self.btn_rect = ctk.CTkButton(
             btn_box,
@@ -636,7 +654,7 @@ class ScreenSnipper(Toplevel):
             fg_color="#8b5cf6",
             hover_color="#7c3aed",
             height=30,
-            width=95,
+            width=90,
             command=lambda: self.set_mode("rectangle")
         )
         self.btn_rect.pack(side="left", padx=2, expand=True)
@@ -648,10 +666,22 @@ class ScreenSnipper(Toplevel):
             fg_color="#2b2d31",
             hover_color="#3d4047",
             height=30,
-            width=110,
+            width=105,
             command=lambda: self.set_mode("smart_object")
         )
         self.btn_smart.pack(side="left", padx=2, expand=True)
+
+        self.btn_free = ctk.CTkButton(
+            btn_box,
+            text="✏️ Freeform",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#2b2d31",
+            hover_color="#3d4047",
+            height=30,
+            width=90,
+            command=lambda: self.set_mode("freeform")
+        )
+        self.btn_free.pack(side="left", padx=2, expand=True)
 
         self.btn_win = ctk.CTkButton(
             btn_box,
@@ -660,7 +690,7 @@ class ScreenSnipper(Toplevel):
             fg_color="#2b2d31",
             hover_color="#3d4047",
             height=30,
-            width=85,
+            width=80,
             command=lambda: self.set_mode("window")
         )
         self.btn_win.pack(side="left", padx=2, expand=True)
@@ -672,7 +702,7 @@ class ScreenSnipper(Toplevel):
             fg_color="#2b2d31",
             hover_color="#3d4047",
             height=30,
-            width=95,
+            width=90,
             command=self.snip_fullscreen
         )
         self.btn_full.pack(side="left", padx=2, expand=True)
@@ -696,6 +726,7 @@ class ScreenSnipper(Toplevel):
         inactive_color = "#2b2d31"
         self.btn_rect.configure(fg_color=active_color if mode == "rectangle" else inactive_color)
         self.btn_smart.configure(fg_color=active_color if mode == "smart_object" else inactive_color)
+        self.btn_free.configure(fg_color=active_color if mode == "freeform" else inactive_color)
         self.btn_win.configure(fg_color=active_color if mode == "window" else inactive_color)
 
     def on_press(self, e):
@@ -714,7 +745,16 @@ class ScreenSnipper(Toplevel):
             try: self.canvas.delete(self.rect)
             except Exception: pass
 
-        if self.snipe_mode == "smart_object":
+        for item in self.freehand_drawings:
+            try: self.canvas.delete(item)
+            except Exception: pass
+        self.freehand_drawings.clear()
+        self.freehand_pts = []
+
+        if self.snipe_mode == "freeform":
+            self.freehand_pts.append((e.x, e.y))
+
+        elif self.snipe_mode == "smart_object":
             x, y, w, h = detect_object_bounds_at_point(e.x, e.y)
             self.rect = self.canvas.create_rectangle(x, y, x + w, y + h, outline="#10b981", width=3)
             self.after(120, lambda: self.finish_snip(x, y, w, h))
@@ -740,7 +780,28 @@ class ScreenSnipper(Toplevel):
         if self.snipe_mode == "rectangle" and self.rect and self.start_x is not None:
             self.canvas.coords(self.rect, self.start_x, self.start_y, e.x, e.y)
 
+        elif self.snipe_mode == "freeform":
+            if self.freehand_pts:
+                last_pt = self.freehand_pts[-1]
+                line_id = self.canvas.create_line(last_pt[0], last_pt[1], e.x, e.y, fill="#a855f7", width=3, capstyle="round", joinstyle="round")
+                self.freehand_drawings.append(line_id)
+                self.freehand_pts.append((e.x, e.y))
+
     def on_release(self, e):
+        if self.snipe_mode == "freeform" and self.freehand_pts:
+            xs = [p[0] for p in self.freehand_pts]
+            ys = [p[1] for p in self.freehand_pts]
+            user32 = ctypes.windll.user32
+            sw = user32.GetSystemMetrics(0)
+            sh = user32.GetSystemMetrics(1)
+            min_x, max_x = max(0, min(xs)), min(sw, max(xs))
+            min_y, max_y = max(0, min(ys)), min(sh, max(ys))
+            w = max_x - min_x
+            h = max_y - min_y
+            if w > 5 and h > 5:
+                self.finish_snip(min_x, min_y, w, h)
+            return
+
         if self.start_x is None:
             return
 
@@ -752,7 +813,6 @@ class ScreenSnipper(Toplevel):
             if w > 5 and h > 5:
                 self.finish_snip(x1, y1, w, h)
             else:
-                # Single click in rectangle mode: smart auto-select object around click!
                 sx, sy, sw, sh = detect_object_bounds_at_point(e.x, e.y)
                 self.finish_snip(sx, sy, sw, sh)
 
